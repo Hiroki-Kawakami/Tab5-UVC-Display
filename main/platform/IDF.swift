@@ -50,8 +50,70 @@ class IDF {
      * MARK: GPIO
      */
     class GPIO {
-        static func reset(pin: gpio_num_t) throws(IDF.Error) {
-            try IDF.Error.check(gpio_reset_pin(pin))
+        enum Pin: Int32 {
+            case gpio0 = 0
+            case gpio1 = 1
+            case gpio2 = 2
+            case gpio3 = 3
+            case gpio4 = 4
+            case gpio5 = 5
+            case gpio6 = 6
+            case gpio7 = 7
+            case gpio8 = 8
+            case gpio9 = 9
+            case gpio10 = 10
+            case gpio11 = 11
+            case gpio12 = 12
+            case gpio13 = 13
+            case gpio14 = 14
+            case gpio15 = 15
+            case gpio16 = 16
+            case gpio17 = 17
+            case gpio18 = 18
+            case gpio19 = 19
+            case gpio20 = 20
+            case gpio21 = 21
+            case gpio22 = 22
+            case gpio23 = 23
+            case gpio24 = 24
+            case gpio25 = 25
+            case gpio26 = 26
+            case gpio27 = 27
+            case gpio28 = 28
+            case gpio29 = 29
+            case gpio30 = 30
+            case gpio31 = 31
+            case gpio32 = 32
+            case gpio33 = 33
+            case gpio34 = 34
+            case gpio35 = 35
+            case gpio36 = 36
+            case gpio37 = 37
+            case gpio38 = 38
+            case gpio39 = 39
+            case gpio40 = 40
+            case gpio41 = 41
+            case gpio42 = 42
+            case gpio43 = 43
+            case gpio44 = 44
+            case gpio45 = 45
+            case gpio46 = 46
+            case gpio47 = 47
+            case gpio48 = 48
+            case gpio49 = 49
+            case gpio50 = 50
+            case gpio51 = 51
+            case gpio52 = 52
+            case gpio53 = 53
+            case gpio54 = 54
+
+            var value: gpio_num_t {
+                return gpio_num_t(rawValue)
+            }
+        }
+
+        static func reset(pin: Pin) throws(IDF.Error) {
+            try IDF.Error.check(gpio_reset_pin(pin.value))
         }
     }
 
@@ -86,11 +148,11 @@ class IDF {
         let channel: ledc_channel_t
         let timer: Timer
 
-        init(gpio_num: gpio_num_t, timer: Timer) throws(IDF.Error) {
+        init(gpio: GPIO.Pin, timer: Timer) throws(IDF.Error) {
             channel = ledc_channel_t(Self.channelPool.take())
             self.timer = timer
             var config = ledc_channel_config_t(
-                gpio_num: gpio_num.rawValue,
+                gpio_num: gpio.rawValue,
                 speed_mode: LEDC_LOW_SPEED_MODE,
                 channel: channel,
                 intr_type: LEDC_INTR_DISABLE,
@@ -121,15 +183,15 @@ class IDF {
      * MARK: I2C
      */
     class I2C {
-        private static var i2cPool = IDF.ResourcePool(max: I2C_NUM_MAX.rawValue)
+        private static var i2cPool = IDF.ResourcePool(max: SOC_I2C_NUM)
         let portNumber: i2c_port_num_t
         let handle: i2c_master_bus_handle_t
-        init(num: UInt32? = nil, scl: gpio_num_t, sda: gpio_num_t) throws(IDF.Error) {
+        init(num: UInt32? = nil, scl: GPIO.Pin, sda: GPIO.Pin) throws(IDF.Error) {
             portNumber = i2c_port_num_t(Self.i2cPool.take(num))
             var config = i2c_master_bus_config_t(
                 i2c_port: portNumber,
-                sda_io_num: sda,
-                scl_io_num: scl,
+                sda_io_num: sda.value,
+                scl_io_num: scl.value,
                 i2c_master_bus_config_t.__Unnamed_union___Anonymous_field3(clk_source: I2C_CLK_SRC_DEFAULT),
                 glitch_ignore_cnt: 0,
                 intr_priority: 0,
@@ -173,6 +235,398 @@ class IDF {
             var handle: i2c_master_dev_handle_t? = nil
             try IDF.Error.check(i2c_master_bus_add_device(self.handle, &config, &handle))
             return Device(handle: handle!)
+        }
+    }
+
+    /*
+     * MARK: I2S
+     */
+    class I2S {
+
+        enum Role {
+            case master
+            case slave
+
+            var value: i2s_role_t {
+                switch self {
+                case .master: return I2S_ROLE_MASTER
+                case .slave: return I2S_ROLE_SLAVE
+                }
+            }
+        }
+
+        enum Format {
+            class STD {
+                struct ClockConfig {
+                    let sampleRate: UInt32
+                    let clkSrc: soc_periph_i2s_clk_src_t
+                    let extClkFreq: UInt32
+                    let mclkMultiple: i2s_mclk_multiple_t
+
+                    static func `default`(sampleRate: UInt32) -> ClockConfig {
+                        return ClockConfig(
+                            sampleRate: sampleRate,
+                            clkSrc: I2S_CLK_SRC_DEFAULT,
+                            extClkFreq: 0,
+                            mclkMultiple: I2S_MCLK_MULTIPLE_256
+                        )
+                    }
+
+                    var value: i2s_std_clk_config_t {
+                        return i2s_std_clk_config_t(
+                            sample_rate_hz: sampleRate,
+                            clk_src: clkSrc,
+                            ext_clk_freq_hz: extClkFreq,
+                            mclk_multiple: mclkMultiple
+                        )
+                    }
+                }
+                struct SlotConfig {
+                    let dataBitWidth: i2s_data_bit_width_t
+                    let slotBitWidth: i2s_slot_bit_width_t
+                    let slotMode: i2s_slot_mode_t
+                    let slotMask: i2s_std_slot_mask_t
+                    let wsWidth: UInt32
+                    let wsPol: Bool
+                    let bitShift: Bool
+                    let leftAlign: Bool
+                    let bigEndian: Bool
+                    let bitOrderLsb: Bool
+
+                    static func philipsDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: I2S_STD_SLOT_BOTH,
+                            wsWidth: dataBitWidth.rawValue,
+                            wsPol: false,
+                            bitShift: true,
+                            leftAlign: true,
+                            bigEndian: false,
+                            bitOrderLsb: false
+                        )
+                    }
+                    static func pcmDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: I2S_STD_SLOT_BOTH,
+                            wsWidth: 1,
+                            wsPol: true,
+                            bitShift: true,
+                            leftAlign: true,
+                            bigEndian: false,
+                            bitOrderLsb: false
+                        )
+                    }
+                    static func msbDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: I2S_STD_SLOT_BOTH,
+                            wsWidth: dataBitWidth.rawValue,
+                            wsPol: false,
+                            bitShift: false,
+                            leftAlign: true,
+                            bigEndian: false,
+                            bitOrderLsb: false
+                        )
+                    }
+
+                    var value: i2s_std_slot_config_t {
+                        return i2s_std_slot_config_t(
+                            data_bit_width: dataBitWidth,
+                            slot_bit_width: slotBitWidth,
+                            slot_mode: slotMode,
+                            slot_mask: slotMask,
+                            ws_width: wsWidth,
+                            ws_pol: wsPol,
+                            bit_shift: bitShift,
+                            left_align: leftAlign,
+                            big_endian: bigEndian,
+                            bit_order_lsb: bitOrderLsb
+                        )
+                    }
+                }
+                struct GPIOConfig {
+                    let mclk: GPIO.Pin?
+                    let bclk: GPIO.Pin
+                    let ws: GPIO.Pin
+                    let dout: GPIO.Pin?
+                    let din: GPIO.Pin?
+
+                    var value: i2s_std_gpio_config_t {
+                        var config = i2s_std_gpio_config_t()
+                        config.mclk = mclk?.value ?? GPIO_NUM_NC
+                        config.bclk = bclk.value
+                        config.ws = ws.value
+                        config.dout = dout?.value ?? GPIO_NUM_NC
+                        config.din = din?.value ?? GPIO_NUM_NC
+                        return config
+                    }
+                }
+            }
+            case std(clock: STD.ClockConfig, slot: STD.SlotConfig, gpio: STD.GPIOConfig)
+
+            var i2sConfig: i2s_std_config_t? {
+                guard case let .std(clock, slot, gpio) = self else { return nil }
+                return i2s_std_config_t(
+                    clk_cfg: clock.value,
+                    slot_cfg: slot.value,
+                    gpio_cfg: gpio.value
+                )
+            }
+
+            class TDM {
+                struct ClockConfig {
+                    let sampleRate: UInt32
+                    let clkSrc: i2s_clock_src_t
+                    let extClkFreq: UInt32
+                    let mclkMultiple: i2s_mclk_multiple_t
+                    let bclkDiv: UInt32
+
+                    static func `default`(sampleRate: UInt32) -> ClockConfig {
+                        return ClockConfig(
+                            sampleRate: sampleRate,
+                            clkSrc: I2S_CLK_SRC_DEFAULT,
+                            extClkFreq: 0,
+                            mclkMultiple: I2S_MCLK_MULTIPLE_256,
+                            bclkDiv: 0
+                        )
+                    }
+
+                    var value: i2s_tdm_clk_config_t {
+                        return i2s_tdm_clk_config_t(
+                            sample_rate_hz: sampleRate,
+                            clk_src: clkSrc,
+                            ext_clk_freq_hz: extClkFreq,
+                            mclk_multiple: mclkMultiple,
+                            bclk_div: bclkDiv
+                        )
+                    }
+                }
+                struct SlotConfig {
+
+                    struct SlotMask: OptionSet {
+                        let rawValue: UInt32
+                        static let slot0 = SlotMask(rawValue: 1 << 0)
+                        static let slot1 = SlotMask(rawValue: 1 << 1)
+                        static let slot2 = SlotMask(rawValue: 1 << 2)
+                        static let slot3 = SlotMask(rawValue: 1 << 3)
+                        static let slot4 = SlotMask(rawValue: 1 << 4)
+                        static let slot5 = SlotMask(rawValue: 1 << 5)
+                        static let slot6 = SlotMask(rawValue: 1 << 6)
+                        static let slot7 = SlotMask(rawValue: 1 << 7)
+                        static let slot8 = SlotMask(rawValue: 1 << 8)
+                        static let slot9 = SlotMask(rawValue: 1 << 9)
+                        static let slot10 = SlotMask(rawValue: 1 << 10)
+                        static let slot11 = SlotMask(rawValue: 1 << 11)
+                        static let slot12 = SlotMask(rawValue: 1 << 12)
+                        static let slot13 = SlotMask(rawValue: 1 << 13)
+                        static let slot14 = SlotMask(rawValue: 1 << 14)
+                        static let slot15 = SlotMask(rawValue: 1 << 15)
+                    }
+
+                    let dataBitWidth: i2s_data_bit_width_t
+                    let slotBitWidth: i2s_slot_bit_width_t
+                    let slotMode: i2s_slot_mode_t
+                    let slotMask: SlotMask
+                    let wsWidth: UInt32
+                    let wsPol: Bool
+                    let bitShift: Bool
+                    let leftAlign: Bool
+                    let bigEndian: Bool
+                    let bitOrderLsb: Bool
+                    let skipMask: Bool
+                    let totalSlot: UInt32
+
+                    static func philipsDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                        slotMask: SlotMask
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: slotMask,
+                            wsWidth: UInt32(I2S_TDM_AUTO_WS_WIDTH),
+                            wsPol: false,
+                            bitShift: true,
+                            leftAlign: false,
+                            bigEndian: false,
+                            bitOrderLsb: false,
+                            skipMask: false,
+                            totalSlot: UInt32(I2S_TDM_AUTO_SLOT_NUM)
+                        )
+                    }
+                    static func msbDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                        slotMask: SlotMask
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: slotMask,
+                            wsWidth: UInt32(I2S_TDM_AUTO_WS_WIDTH),
+                            wsPol: false,
+                            bitShift: false,
+                            leftAlign: false,
+                            bigEndian: false,
+                            bitOrderLsb: false,
+                            skipMask: false,
+                            totalSlot: UInt32(I2S_TDM_AUTO_SLOT_NUM)
+                        )
+                    }
+                    static func pcmShortDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                        slotMask: SlotMask
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: slotMask,
+                            wsWidth: 1,
+                            wsPol: true,
+                            bitShift: true,
+                            leftAlign: false,
+                            bigEndian: false,
+                            bitOrderLsb: false,
+                            skipMask: false,
+                            totalSlot: UInt32(I2S_TDM_AUTO_SLOT_NUM)
+                        )
+                    }
+                    static func pcmLongDefault(
+                        dataBitWidth: i2s_data_bit_width_t,
+                        slotMode: i2s_slot_mode_t,
+                        slotMask: SlotMask
+                    ) -> SlotConfig {
+                        return SlotConfig(
+                            dataBitWidth: dataBitWidth,
+                            slotBitWidth: I2S_SLOT_BIT_WIDTH_AUTO,
+                            slotMode: slotMode,
+                            slotMask: slotMask,
+                            wsWidth: dataBitWidth.rawValue,
+                            wsPol: true,
+                            bitShift: true,
+                            leftAlign: false,
+                            bigEndian: false,
+                            bitOrderLsb: false,
+                            skipMask: false,
+                            totalSlot: UInt32(I2S_TDM_AUTO_SLOT_NUM)
+                        )
+                    }
+
+                    var value: i2s_tdm_slot_config_t {
+                        return i2s_tdm_slot_config_t(
+                            data_bit_width: dataBitWidth,
+                            slot_bit_width: slotBitWidth,
+                            slot_mode: slotMode,
+                            slot_mask: i2s_tdm_slot_mask_t(rawValue: slotMask.rawValue),
+                            ws_width: wsWidth,
+                            ws_pol: wsPol,
+                            bit_shift: bitShift,
+                            left_align: leftAlign,
+                            big_endian: bigEndian,
+                            bit_order_lsb: bitOrderLsb,
+                            skip_mask: skipMask,
+                            total_slot: totalSlot
+                        )
+                    }
+                }
+                struct GPIOConfig {
+                    let mclk: GPIO.Pin?
+                    let bclk: GPIO.Pin
+                    let ws: GPIO.Pin
+                    let dout: GPIO.Pin?
+                    let din: GPIO.Pin?
+
+                    var value: i2s_tdm_gpio_config_t {
+                        var config = i2s_tdm_gpio_config_t()
+                        config.mclk = mclk?.value ?? GPIO_NUM_NC
+                        config.bclk = bclk.value
+                        config.ws = ws.value
+                        config.dout = dout?.value ?? GPIO_NUM_NC
+                        config.din = din?.value ?? GPIO_NUM_NC
+                        return config
+                    }
+                }
+            }
+            case tdm(clock: TDM.ClockConfig, slot: TDM.SlotConfig, gpio: TDM.GPIOConfig)
+
+            var tdmConfig: i2s_tdm_config_t? {
+                guard case let .tdm(clock, slot, gpio) = self else { return nil }
+                return i2s_tdm_config_t(
+                    clk_cfg: clock.value,
+                    slot_cfg: slot.value,
+                    gpio_cfg: gpio.value
+                )
+            }
+        }
+
+        private static var i2sPool = IDF.ResourcePool(max: SOC_I2S_NUM)
+
+        let port: i2s_port_t
+        let channels: (tx: i2s_chan_handle_t, rx: i2s_chan_handle_t)
+        let interface: UnsafePointer<audio_codec_data_if_t>
+
+        init(
+            num: UInt32? = nil, role: Role = .master,
+            dmaDescNum: UInt32 = 6, dmaFrameNum: UInt32 = 240,
+            autoClear: (beforeCb: Bool, afterCb: Bool) = (false, false),
+            allowPd: Bool = false, intrPriority: Int32 = 0,
+            format: (tx: Format, rx: Format),
+        ) throws(IDF.Error) {
+            port = i2s_port_t(Self.i2sPool.take(num))
+            var channelConfig = i2s_chan_config_t()
+            channelConfig.id = port
+            channelConfig.role = role.value
+            channelConfig.dma_desc_num = dmaDescNum
+            channelConfig.dma_frame_num = dmaFrameNum
+            channelConfig.auto_clear_after_cb = autoClear.afterCb
+            channelConfig.auto_clear_before_cb = autoClear.beforeCb
+            channelConfig.allow_pd = allowPd
+            channelConfig.intr_priority = intrPriority
+
+            var tx: i2s_chan_handle_t?
+            var rx: i2s_chan_handle_t?
+            try IDF.Error.check(i2s_new_channel(&channelConfig, &tx, &rx))
+            self.channels = (tx: tx!, rx: rx!)
+
+            let initFormatMode: (i2s_chan_handle_t, Format) throws(IDF.Error) -> Void = {
+                if var i2sConfig = $1.i2sConfig {
+                    try IDF.Error.check(i2s_channel_init_std_mode($0, &i2sConfig))
+                }
+                if var tdmConfig = $1.tdmConfig {
+                    try IDF.Error.check(i2s_channel_init_tdm_mode($0, &tdmConfig))
+                }
+                try IDF.Error.check(i2s_channel_enable($0))
+            }
+            try initFormatMode(channels.tx, format.tx)
+            try initFormatMode(channels.rx, format.rx)
+
+            var i2sConfig = audio_codec_i2s_cfg_t(
+                port: UInt8(port.rawValue),
+                rx_handle: UnsafeMutableRawPointer(channels.rx),
+                tx_handle: UnsafeMutableRawPointer(channels.tx),
+            )
+            interface = audio_codec_new_i2s_data(&i2sConfig)
         }
     }
 

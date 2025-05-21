@@ -1,4 +1,24 @@
 dependencies:
+  espressif/cmake_utilities:
+    component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.5.3
+  espressif/esp_codec_dev:
+    component_hash: 18c22e1411224ba6103c4aca1b01bc740af33926756e9e106370a477d52bcba1
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.3.4
   espressif/esp_lcd_ili9881c:
     component_hash: f4f374226b62baf13f735864e8fae58e17c537df34d598e059f6caad4761ef65
     dependencies:
@@ -11,6 +31,20 @@ dependencies:
     targets:
     - esp32p4
     version: 1.0.1
+  espressif/usb_host_uac:
+    component_hash: 36e1f7cf037a7ec7ea9bb8d5f40f5a39290bc67935c34f9f3dbdbfdd00406488
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.5.*
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.3.0
   espressif/usb_host_uvc:
     component_hash: 59934d3d7ea4ca5109f67a3859ccd3601dc70c537bffd8ed52bac6761340469f
     dependencies:
@@ -26,9 +60,11 @@ dependencies:
       type: idf
     version: 5.4.1
 direct_dependencies:
+- espressif/esp_codec_dev
 - espressif/esp_lcd_ili9881c
+- espressif/usb_host_uac
 - espressif/usb_host_uvc
 - idf
-manifest_hash: e6ac537566a25153602bf67bdf87cdb73bbede75166e07567524a05f731bb244
+manifest_hash: a77e92b6fa32afe0441776b0f9e325539ca1ff6f0e31031f87234d8d64f34a31
 target: esp32p4
 version: 2.0.0

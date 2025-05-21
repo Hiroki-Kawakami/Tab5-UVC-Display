@@ -1,4 +1,4 @@
-fileprivate let LOG = Logger(tag: "USBHost")
+fileprivate let Log = Logger(tag: "USBHost")
 
 class USBHost {
 
@@ -17,28 +17,48 @@ class USBHost {
                 usb_host_device_free_all()
             }
             if (eventFlags & UInt32(USB_HOST_LIB_EVENT_FLAGS_ALL_FREE)) != 0 {
-                LOG.info("All devices freed")
+                Log.info("All devices freed")
             }
         }
     }
 
-    // UVC Driver
+    var deviceAddrList: [UInt8] {
+        var addrList = [UInt8](repeating: 0, count: 16)
+        var numDevices: Int32 = 0
+        usb_host_device_addr_list_fill(Int32(addrList.count), &addrList, &numDevices)
+        if numDevices != addrList.count {
+            addrList.removeLast(addrList.count - Int(numDevices))
+        }
+        return addrList
+    }
+
+    // MARK: UVC Driver
     class UVC {
+        private var detectedDevice: (addr: UInt8, streamIndex: UInt8, frameInfoNum: Int)?
+
         func install(
             taskStackSize: Int,
             taskPriority: UInt32,
             xCoreID: Int32 = tskNO_AFFINITY,
-            createBackgroundTask: Bool = true,
+            createBackgroundTask: Bool = true
         ) throws(IDF.Error) {
             var config = uvc_host_driver_config_t(
                 driver_task_stack_size: taskStackSize,
                 driver_task_priority: taskPriority,
                 xCoreID: xCoreID,
                 create_background_task: createBackgroundTask,
-                event_cb: nil,
-                user_ctx: nil
+                event_cb: { (event, user_ctx) in
+                    let uvc = Unmanaged<UVC>.fromOpaque(user_ctx!).takeUnretainedValue()
+                    uvc.detectedDevice = (
+                        addr: event!.pointee.device_connected.dev_addr,
+                        streamIndex: event!.pointee.device_connected.uvc_stream_index,
+                        frameInfoNum: Int(event!.pointee.device_connected.frame_info_num)
+                    )
+                },
+                user_ctx: Unmanaged.passRetained(self).toOpaque()
             )
             try IDF.Error.check(uvc_host_install(&config))
+            Log.info("UAC class driver installed")
         }
 
         enum StreamFormat {
@@ -82,13 +102,17 @@ class USBHost {
                 event_cb: {
                     let uvc = Unmanaged<UVC>.fromOpaque($1!).takeUnretainedValue()
                     uvc.streamCallback(event: $0!)
+                    if $0!.pointee.type == UVC_HOST_DEVICE_DISCONNECTED {
+                        uvc_host_stream_close(uvc.stream)
+                        let _ = Unmanaged<UVC>.fromOpaque($1!).takeRetainedValue()
+                    }
                 },
                 frame_cb: {
                     let uvc = Unmanaged<UVC>.fromOpaque($1!).takeUnretainedValue()
                     if let frameCallback = uvc.frameCallback {
                         return frameCallback($0!)
                     }
-                    LOG.warn("Frame callback not registered")
+                    Log.warn("Frame callback not registered")
                     return false
                 },
                 user_ctx: Unmanaged.passRetained(self).toOpaque(),
@@ -106,7 +130,7 @@ class USBHost {
                 ),
                 advanced: uvc_host_stream_config_t.__Unnamed_struct_advanced(
                     number_of_frame_buffers: numberOfFrameBuffers,
-                    frame_size: 256 * 1024,
+                    frame_size: 2048 * 1024,
                     frame_heap_caps: UInt32(MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED),
                     number_of_urbs: 3,
                     urb_size: 4 * 1024
@@ -118,14 +142,14 @@ class USBHost {
         private func streamCallback(event: UnsafePointer<uvc_host_stream_event_data_t>) {
             switch event.pointee.type {
             case UVC_HOST_TRANSFER_ERROR:
-                LOG.error("Transfer error")
+                Log.error("Transfer error")
             case UVC_HOST_DEVICE_DISCONNECTED:
-                LOG.warn("Device disconnected")
+                Log.warn("Device disconnected")
                 disconnectCallback?()
             case UVC_HOST_FRAME_BUFFER_OVERFLOW:
-                LOG.warn("Frame buffer overflow")
+                Log.warn("Frame buffer overflow")
             case UVC_HOST_FRAME_BUFFER_UNDERFLOW:
-                LOG.warn("Frame buffer underflow")
+                Log.warn("Frame buffer underflow")
             default:
                 fatalError("Unknown event type: \(event.pointee.type)")
                 break
@@ -145,6 +169,169 @@ class USBHost {
 
         func onDisconnect(_ callback: @escaping () -> Void) {
             self.disconnectCallback = callback
+        }
+
+        var frameInfoList: [uvc_host_frame_info_t]? {
+            get throws(IDF.Error) {
+                guard let device = detectedDevice else {
+                    return nil
+                }
+                var list: [uvc_host_frame_info_t] = .init(repeating: uvc_host_frame_info_t(), count: device.frameInfoNum)
+                var listSize = device.frameInfoNum
+                let ptr = list.withUnsafeMutableBufferPointer { $0.baseAddress! }
+                try IDF.Error.check(uvc_host_get_frame_list(device.addr, device.streamIndex, OpaquePointer(ptr), &listSize))
+                return list
+            }
+        }
+    }
+
+    // MARK: UAC Driver
+    class UAC {
+        func install(
+            taskStackSize: Int,
+            taskPriority: UInt32,
+            xCoreID: Int32 = tskNO_AFFINITY,
+            createBackgroundTask: Bool = true,
+        ) throws(IDF.Error) {
+            var config = uac_host_driver_config_t(
+                create_background_task: createBackgroundTask,
+                task_priority: Int(taskPriority),
+                stack_size: taskStackSize,
+                core_id: xCoreID,
+                callback: { (addr, ifaceNum, event, arg) in
+                    let uac = Unmanaged<UAC>.fromOpaque(arg!).takeUnretainedValue()
+                    uac.callback(addr: addr, ifaceNum: ifaceNum, event: event)
+                },
+                callback_arg: Unmanaged.passRetained(self).toOpaque()
+            )
+            try IDF.Error.check(uac_host_install(&config))
+            Log.info("UAC class driver installed")
+        }
+
+        enum Direction {
+            case rx
+            case tx
+        }
+
+        var detected: [(addr: UInt8, ifaceNum: UInt8, direction: Direction)] = []
+
+        private func callback(addr: UInt8, ifaceNum: UInt8, event: uac_host_driver_event_t) {
+            detected.append((addr: addr, ifaceNum: ifaceNum, direction: event == UAC_HOST_DRIVER_EVENT_RX_CONNECTED ? .rx : .tx))
+        }
+
+        class Device {
+            var handle: uac_host_device_handle_t!
+            private var rxDoneCallback: ((Device) -> Void)?
+            init(
+                addr: UInt8,
+                ifaceNum: UInt8,
+                bufferSize: UInt32,
+                bufferThreshold: UInt32
+            ) throws(IDF.Error) {
+                var config = uac_host_device_config_t(
+                    addr: addr,
+                    iface_num: ifaceNum,
+                    buffer_size: bufferSize,
+                    buffer_threshold: bufferThreshold,
+                    callback: { (handle, event, arg) in
+                        let device = Unmanaged<Device>.fromOpaque(arg!).takeUnretainedValue()
+                        switch event {
+                        case UAC_HOST_DEVICE_EVENT_RX_DONE:
+                            device.rxDoneCallback?(device)
+                        case UAC_HOST_DEVICE_EVENT_TX_DONE:
+                            Log.info("TX done")
+                        case UAC_HOST_DEVICE_EVENT_TRANSFER_ERROR:
+                            Log.error("Transfer error")
+                        case UAC_HOST_DRIVER_EVENT_DISCONNECTED:
+                            Log.warn("UAC Device disconnected")
+                            uac_host_device_close(handle)
+                            let _ = Unmanaged<Device>.fromOpaque(arg!).takeRetainedValue()
+                        default:
+                            Log.warn("Unknown event: \(event.rawValue)")
+                        }
+                    },
+                    callback_arg: Unmanaged.passRetained(self).toOpaque()
+                )
+                try IDF.Error.check(uac_host_device_open(&config, &handle))
+            }
+            deinit {
+                Log.info("UAC device deinit")
+            }
+
+            func printDeviceParam() throws(IDF.Error) {
+                try IDF.Error.check(uac_host_printf_device_param(handle))
+            }
+
+            var deviceInfo: uac_host_dev_info_t {
+                get throws(IDF.Error) {
+                    var info = uac_host_dev_info_t()
+                    try IDF.Error.check(uac_host_get_device_info(handle, &info))
+                    return info
+                }
+            }
+
+            func start(
+                sampleRate: Int,
+                channels: Int,
+                bitWidth: Int,
+            ) throws(IDF.Error) {
+                var config = uac_host_stream_config_t(
+                    channels: UInt8(channels),
+                    bit_resolution: UInt8(bitWidth),
+                    sample_freq: UInt32(sampleRate),
+                    flags: 0
+                )
+                try IDF.Error.check(uac_host_device_start(handle, &config))
+            }
+
+            func onRxDone(_ callback: @escaping (Device) -> Void) {
+                self.rxDoneCallback = callback
+            }
+
+            func read(
+                buffer: UnsafeMutableRawBufferPointer,
+                timeout: UInt32 = portMAX_DELAY
+            ) throws(IDF.Error) -> UInt32 {
+                var bytesRead: UInt32 = 0
+                try IDF.Error.check(uac_host_device_read(
+                    handle,
+                    buffer.assumingMemoryBound(to: UInt8.self).baseAddress,
+                    UInt32(buffer.count),
+                    &bytesRead,
+                    timeout
+                ))
+                return bytesRead
+            }
+        }
+
+        func open(
+            addr: UInt8,
+            ifaceNum: UInt8,
+            bufferSize: UInt32,
+            bufferThreshold: UInt32
+        ) throws(IDF.Error) -> Device {
+            return try Device(
+                addr: addr,
+                ifaceNum: ifaceNum,
+                bufferSize: bufferSize,
+                bufferThreshold: bufferThreshold
+            )
+        }
+
+        func open(
+            direction: Direction,
+            bufferSize: UInt32,
+            bufferThreshold: UInt32
+        ) throws(IDF.Error) -> Device? {
+            guard let device = detected.first(where: { $0.direction == direction }) else {
+                return nil
+            }
+            return try open(
+                addr: device.addr,
+                ifaceNum: device.ifaceNum,
+                bufferSize: bufferSize,
+                bufferThreshold: bufferThreshold
+            )
         }
     }
 }

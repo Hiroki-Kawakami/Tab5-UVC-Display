@@ -13,3 +13,13 @@ struct Logger {
         esp_log_write_str(ESP_LOG_INFO, tag.utf8Start, "\u{1b}[0;32mI (\(esp_log_timestamp())) \(tag): \(message)\u{1b}[0m\n")
     }
 }
+
+extension Optional {
+    func unwrap(errMsg: () -> String) -> Wrapped {
+        if let value = self {
+            return value
+        }
+        Logger(tag: "Optional").error(errMsg())
+        abort()
+    }
+}

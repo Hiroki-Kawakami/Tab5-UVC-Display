@@ -5,7 +5,6 @@ class Queue<T>: Sequence {
         if queue == nil {
             return nil
         }
-        print("Creeated queue with capacity \(capacity) and size \(MemoryLayout<T>.size)")
         self.queue = queue!
     }
 
