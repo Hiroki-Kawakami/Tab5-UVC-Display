@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "UnicodeData.cpp"
+        "UnicodeGrapheme.cpp"
+        "UnicodeNormalization.cpp"
+        "UnicodeScalarProps.cpp"
+        "UnicodeWord.cpp"
+    PRIV_INCLUDE_DIRS
+        "."
+)
+add_definitions(-DSWIFT_STDLIB_ENABLE_UNICODE_DATA)

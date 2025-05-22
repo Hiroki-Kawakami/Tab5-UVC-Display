@@ -6,7 +6,8 @@ idf_component_register(
 
 idf_build_get_property(target IDF_TARGET)
 idf_build_get_property(arch IDF_TARGET_ARCH)
-set(CMAKE_Swift_COMPILER /Library/Developer/Toolchains/swift-latest.xctoolchain/usr/bin/swiftc CACHE FILEPATH "Swift compiler")
+set(SWIFT_TOOLCHAIN_DIR /Library/Developer/Toolchains/swift-latest.xctoolchain)
+set(CMAKE_Swift_COMPILER ${SWIFT_TOOLCHAIN_DIR}/usr/bin/swiftc CACHE FILEPATH "Swift compiler")
 
 if("${arch}" STREQUAL "xtensa")
     message(FATAL_ERROR "Not supported target: ${target}")
@@ -50,6 +51,12 @@ target_compile_options(${COMPONENT_LIB} PUBLIC "$<$<COMPILE_LANGUAGE:Swift>:SHEL
 
         -import-bridging-header ${CMAKE_CURRENT_LIST_DIR}/BridgingHeader.h
     >")
+# target_link_directories(${COMPONENT_LIB} PUBLIC "${SWIFT_TOOLCHAIN_DIR}/usr/lib/swift/embedded/riscv32-none-none-eabi")
+# target_link_libraries(${COMPONENT_LIB} PUBLIC
+#     -Wl,--whole-archive
+#     swiftUnicodeDataTables
+#     -Wl,--no-whole-archive
+# )
 
 # Enable Swift support in CMake, force Whole Module builds (required by Embedded Swift), and use "CMAKE_Swift_COMPILER_WORKS" to
 # skip the trial compilations which don't (yet) correctly work when cross-compiling.

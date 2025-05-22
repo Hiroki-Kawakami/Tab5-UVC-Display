@@ -35,18 +35,40 @@ class M5StackTab5 {
             mclk: .gpio30, bclk: .gpio27, ws: .gpio29, dout: .gpio26, din: .gpio28,
             i2c: i2c
         )
-        return M5StackTab5(i2c: i2c, pi4io: pi4io, display: display, audio: audio)
+        let sdcard = try SDCard(
+            ldo: (channel: 4, voltageMv: 3300),
+            slot: .default(
+                busWidth: 4,
+                clk: .gpio43, cmd: .gpio44,
+                data0: .gpio39, data1: .gpio40, data2: .gpio41, data3: .gpio42,
+            )
+        )
+        return M5StackTab5(
+            i2c: i2c,
+            pi4io: pi4io,
+            display: display,
+            audio: audio,
+            sdcard: sdcard
+        )
     }
 
     let i2c: IDF.I2C
     let pi4io: [PI4IO]
     let display: Display
     let audio: Audio
-    private init(i2c: IDF.I2C, pi4io: [PI4IO], display: Display, audio: Audio) {
+    let sdcard: SDCard
+    private init(
+        i2c: IDF.I2C,
+        pi4io: [PI4IO],
+        display: Display,
+        audio: Audio,
+        sdcard: SDCard
+    ) {
         self.i2c = i2c
         self.pi4io = pi4io
         self.display = display
         self.audio = audio
+        self.sdcard = sdcard
     }
 
     /*
@@ -261,6 +283,7 @@ class M5StackTab5 {
                 )
             )
             outputDevice = Audio.initSpeaker(i2s: i2s, i2c: i2c)
+            volume = 0
             try reconfigOutput(rate: 48000, bps: 16, ch: 2)
         }
 
@@ -309,7 +332,7 @@ class M5StackTab5 {
             try IDF.Error.check(esp_codec_dev_write(outputDevice, data.baseAddress!, Int32(data.count)))
         }
 
-        var volume: Int = 0 {
+        var volume: Int = -1 {
             didSet {
                 volume = max(0, min(100, volume))
                 do throws(IDF.Error) {
@@ -323,6 +346,44 @@ class M5StackTab5 {
                     Log.error("Failed to set volume: \(error)")
                 }
             }
+        }
+    }
+
+    /*
+     * MARK: SDCard
+     */
+    class SDCard {
+        let powerControl: sd_pwr_ctrl_handle_t
+        var sdmmc: IDF.SDMMC? = nil
+        let slotConfig: IDF.SDMMC.SlotConfig
+
+        init(
+            ldo: (channel: Int32, voltageMv: Int32),
+            slot: IDF.SDMMC.SlotConfig
+        ) throws(IDF.Error) {
+            // Setup SDCard Power (LDO)
+            var ldoConfig = sd_pwr_ctrl_ldo_config_t(ldo_chan_id: ldo.channel)
+            var powerControl: sd_pwr_ctrl_handle_t?
+            try IDF.Error.check(sd_pwr_ctrl_new_on_chip_ldo(&ldoConfig, &powerControl))
+            self.powerControl = powerControl!
+            self.slotConfig = slot
+        }
+
+        var isMounted: Bool {
+            return sdmmc != nil
+        }
+
+        func mount(path: String, maxFiles: Int32) throws(IDF.Error) {
+            var host = IDF.SDMMC.HostConfig.default
+            host.slot = SDMMC_HOST_SLOT_0
+            host.max_freq_khz = SDMMC_FREQ_HIGHSPEED
+            sdmmc = try IDF.SDMMC.mount(
+                path: path,
+                host: host,
+                slot: slotConfig,
+                maxFiles: maxFiles
+            )
+            sdmmc!.printInfo()
         }
     }
 }

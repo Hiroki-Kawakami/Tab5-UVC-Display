@@ -155,6 +155,7 @@ func main() {
 
             uvcStreamSemaphore.take()
             tab5.display.brightness = 0
+            tab5.audio.volume = 0
             esp_restart()
         } catch {
             Log.error("Failed to start UVC/UAC stream: \(error)")
