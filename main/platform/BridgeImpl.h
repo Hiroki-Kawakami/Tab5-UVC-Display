@@ -13,6 +13,7 @@
 #include "driver/jpeg_decode.h"
 #include "driver/ppa.h"
 #include "driver/sdmmc_host.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_codec_dev.h"

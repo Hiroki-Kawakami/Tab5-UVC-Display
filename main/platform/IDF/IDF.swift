@@ -45,6 +45,10 @@ class IDF {
             }
         }
     }
+
+    static var time: Int64 { // microseconds
+        esp_timer_get_time()
+    }
 }
 
 extension Comparable {
