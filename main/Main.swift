@@ -1,9 +1,36 @@
 fileprivate let Log = Logger(tag: "main")
 
 @_cdecl("app_main")
-func main() {
-    let tab5 = try! M5StackTab5.begin()
+func app_main() {
+    do {
+        try main()
+    } catch {
+        Log.error("Main Function Exit with Error: \(error)")
+    }
+}
+func main() throws(IDF.Error) {
+    let tab5 = try M5StackTab5.begin()
     tab5.display.brightness = 1.0
+
+    let multiTouch: MultiTouch = MultiTouch()
+    multiTouch.task {
+        tab5.touch.waitInterrupt()
+        return try! tab5.touch.coordinates
+    }
+    multiTouch.onEvent { event in
+        switch event {
+        case .tap(let point):
+            Log.info("Tap at (\(point.x), \(point.y))")
+        case .longPress(let point):
+            Log.info("Long press at (\(point.x), \(point.y))")
+        case .longTap(let point):
+            Log.info("Long tap at (\(point.x), \(point.y))")
+        case .drag(let from, let to):
+            Log.info("Drag from (\(from.x), \(from.y)) to (\(to.x), \(to.y))")
+        case .dragEnd(let at):
+            Log.info("Drag end at (\(at.x), \(at.y))")
+        }
+    }
 
     // let frameBuffer = Memory.allocate(type: UInt16.self, capacity: 1280 * 720, capability: [.cacheAligned, .spiram])!
     let frameBuffer = tab5.display.frameBuffer
@@ -23,9 +50,9 @@ func main() {
     let uvcDriver = USBHost.UVC()
     let uacDriver = USBHost.UAC()
     let frameQueue = Queue<UnsafePointer<uvc_host_frame_t>>(capacity: 2)!
-    try! usbHost.install()
-    try! uvcDriver.install(taskStackSize: 6 * 1024, taskPriority: 6, xCoreID: 0)
-    try! uacDriver.install(taskStackSize: 4 * 1024, taskPriority: 5, xCoreID: 0)
+    try usbHost.install()
+    try uvcDriver.install(taskStackSize: 6 * 1024, taskPriority: 6, xCoreID: 0)
+    try uacDriver.install(taskStackSize: 4 * 1024, taskPriority: 5, xCoreID: 0)
     uvcDriver.onFrame { frame in
         switch USBHost.UVC.StreamFormat(frame.pointee.vs_format.format) {
         case .mjpeg:

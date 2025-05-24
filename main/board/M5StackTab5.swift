@@ -22,6 +22,8 @@ class M5StackTab5 {
                 (.OUT_SET   , 0b00001001)
             ]),
         ]
+        try Touch.reset(pi4io: pi4io[0], int: .gpio23)
+
         let display = try Display(
             backlightGpio: .gpio22,
             mipiDsiPhyPowerLdo: (channel: 3, voltageMv: 2500),
@@ -29,6 +31,13 @@ class M5StackTab5 {
             laneBitRateMbps: 730, // 720*1280 RGB24 60Hz
             width: 720,
             height: 1280
+        )
+        let touch = try Touch(
+            i2c: i2c,
+            size: (width: 720, height: 1280),
+            int: .gpio23,
+            rst: nil,
+            sclSpeedHz: 100000
         )
         let audio = try Audio(
             num: 1,
@@ -47,6 +56,7 @@ class M5StackTab5 {
             i2c: i2c,
             pi4io: pi4io,
             display: display,
+            touch: touch,
             audio: audio,
             sdcard: sdcard
         )
@@ -55,18 +65,21 @@ class M5StackTab5 {
     let i2c: IDF.I2C
     let pi4io: [PI4IO]
     let display: Display
+    let touch: Touch
     let audio: Audio
     let sdcard: SDCard
     private init(
         i2c: IDF.I2C,
         pi4io: [PI4IO],
         display: Display,
+        touch: Touch,
         audio: Audio,
         sdcard: SDCard
     ) {
         self.i2c = i2c
         self.pi4io = pi4io
         self.display = display
+        self.touch = touch
         self.audio = audio
         self.sdcard = sdcard
     }
@@ -95,6 +108,16 @@ class M5StackTab5 {
             let _ = try device.transmitReceive([Register.CHIP_RESET.rawValue], readSize: 1)
             for (reg, value) in values {
                 try device.transmit([reg.rawValue, value])
+            }
+        }
+
+        var output: UInt8 {
+            get {
+                let data = try! device.transmitReceive([Register.OUT_SET.rawValue], readSize: 1)
+                return data[0]
+            }
+            set {
+                try! device.transmit([Register.OUT_SET.rawValue, newValue])
             }
         }
     }
@@ -227,6 +250,102 @@ class M5StackTab5 {
 
         func drawBitmap(start: (Int32, Int32), end: (Int32, Int32), data: UnsafeRawPointer) {
             esp_lcd_panel_draw_bitmap(panel, start.0, start.1, end.0, end.1, data)
+        }
+    }
+
+    /*
+     * MARK: Touch (GT911)
+     */
+    class Touch {
+        static func reset(pi4io: PI4IO, int: IDF.GPIO.Pin) throws(IDF.Error) {
+            try IDF.GPIO.reset(pin: int)
+            let current = pi4io.output
+            pi4io.output = current & ~(0b11 << 4)
+            Task.delay(100)
+            pi4io.output = current |  (0b11 << 4)
+            Task.delay(100)
+        }
+
+        var ioHandle: esp_lcd_panel_io_handle_t
+        var handle: esp_lcd_touch_handle_t
+        let interrupt: (semaphore: Semaphore, gpio: IDF.GPIO.Pin)?
+
+        init(
+            i2c: IDF.I2C,
+            size: (width: UInt16, height: UInt16),
+            int: IDF.GPIO.Pin?,
+            rst: IDF.GPIO.Pin?,
+            sclSpeedHz: UInt32,
+        ) throws(IDF.Error) {
+            // Setup IO
+            var ioHandle: esp_lcd_panel_handle_t?
+            var ioConfig = esp_lcd_panel_io_i2c_config_t()
+            _ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG(&ioConfig)
+            ioConfig.dev_addr = UInt32(ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP)
+            ioConfig.scl_speed_hz = sclSpeedHz
+            try IDF.Error.check(esp_lcd_new_panel_io_i2c_v2(i2c.handle, &ioConfig, &ioHandle))
+            self.ioHandle = ioHandle!
+
+            // Init GT911
+            var config = esp_lcd_touch_config_t()
+            config.x_max = size.width
+            config.y_max = size.height
+            config.rst_gpio_num = rst?.value ?? GPIO_NUM_NC
+            config.int_gpio_num = int?.value ?? GPIO_NUM_NC
+
+            var handle: esp_lcd_touch_handle_t?
+            try IDF.Error.check(esp_lcd_touch_new_i2c_gt911(ioHandle, &config, &handle))
+            self.handle = handle!
+
+            if let intGpio = int {
+                let semaphore = Semaphore.createBinary()
+                if semaphore == nil {
+                    throw IDF.Error(ESP_ERR_NO_MEM)
+                }
+                self.interrupt = (semaphore: semaphore!, gpio: intGpio)
+
+                try exitSleep()
+                try IDF.Error.check(esp_lcd_touch_register_interrupt_callback_with_data(handle, {
+                    let semaphore = Unmanaged<Semaphore>.fromOpaque($0!.pointee.config.user_data!).takeUnretainedValue()
+                    semaphore.give()
+                }, Unmanaged.passUnretained(semaphore!).toOpaque()))
+            } else {
+                self.interrupt = nil
+                try exitSleep()
+            }
+        }
+
+        private func exitSleep() throws(IDF.Error) {
+            try IDF.Error.check(esp_lcd_touch_exit_sleep(handle))
+            if let int = interrupt?.gpio {
+                var gpioConfig = gpio_config_t()
+                gpioConfig.mode = GPIO_MODE_INPUT
+                gpioConfig.pin_bit_mask = 1 << int.rawValue
+                gpioConfig.intr_type = GPIO_INTR_NEGEDGE
+                try IDF.Error.check(gpio_config(&gpioConfig))
+            }
+        }
+
+        func waitInterrupt() {
+            interrupt?.semaphore.take()
+        }
+
+        private var callback: ((Touch) -> Void)? = nil
+        func onInterrupt(callback: @escaping (Touch) -> Void) {
+            self.callback = callback
+        }
+
+        var coordinates: [Point] {
+            get throws(IDF.Error) {
+                try IDF.Error.check(esp_lcd_touch_read_data(handle))
+                return withUnsafeTemporaryAllocation(of: UInt16.self, capacity: 10) { ptr in
+                    let touchX = ptr.baseAddress!
+                    let touchY = ptr.baseAddress!.advanced(by: 5)
+                    var touchCount: UInt8 = 0
+                    esp_lcd_touch_get_coordinates(handle, touchX, touchY, nil, &touchCount, 5)
+                    return (0..<Int(touchCount)).map { Point(x: Int16(touchX[$0]), y: Int16(touchY[$0])) }
+                }
+            }
         }
     }
 
