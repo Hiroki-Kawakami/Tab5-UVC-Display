@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_partition.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 

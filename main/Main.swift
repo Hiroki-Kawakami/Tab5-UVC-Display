@@ -17,6 +17,32 @@ func main() throws(IDF.Error) {
         tab5.touch.waitInterrupt()
         return try! tab5.touch.coordinates
     }
+
+    let fontPartition = IDF.Partition(type: 0x40, subtype: 0)!
+    let font = Font(from: fontPartition)!
+    font.fontSize = 80
+    let strLines = [
+        "M5Stack Tab5",
+        "Hello, World!",
+        "あいうえお",
+        "こんにちは、世界！",
+    ]
+    withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 720 * 80) { fontBuffer in
+        let frameBuffer = tab5.display.frameBuffer
+        for (index, str) in strLines.enumerated() {
+            fontBuffer.initialize(repeating: 0)
+            font.getBitmap(str, buffer: fontBuffer.baseAddress!, width: 720, height: 80)
+            for y in 0..<80 {
+                let frameBufferY = index * 80 + y
+                for x in 0..<720 {
+                    let pixel = fontBuffer[x + y * 720]
+                    frameBuffer[frameBufferY * 720 + x] = pixel == 0 ? 0x0000 : 0xFFFF
+                }
+            }
+        }
+        tab5.display.drawBitmap(start: (0, 0), end: (720, 1280), data: frameBuffer.baseAddress!)
+    }
+
     multiTouch.onEvent { event in
         switch event {
         case .tap(let point):
