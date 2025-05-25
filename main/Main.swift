@@ -169,7 +169,7 @@ func main() throws(IDF.Error) {
             // Start UVC Video Stream
             try uvcDriver.open(
                 resolution: (width: 1280, height: 720),
-                frameRate: 30,
+                frameRate: 20,
                 pixelFormat: .mjpeg,
                 numberOfFrameBuffers: 2
             )
