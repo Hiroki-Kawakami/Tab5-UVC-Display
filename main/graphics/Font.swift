@@ -36,19 +36,19 @@ class Font {
 
     private struct SizeInfo {
         var scale: Float
-        var baseline: Int32
-        var charWidth: Int32?
+        var baseline: Int
+        var charWidth: Int?
 
         init(font: UnsafePointer<stbtt_fontinfo>, fontSize: Float, proportional: Bool) {
             scale = stbtt_ScaleForPixelHeight(font, fontSize)
             var ascent: Int32 = 0, decent: Int32 = 0
             stbtt_GetFontVMetrics(font, &ascent, &decent, nil)
-            self.baseline = Int32(Float(ascent) * scale)
+            self.baseline = Int(Float(ascent) * scale)
             if !proportional {
                 let codePoint: Int32 = 0x57 // 'W'
                 var charWidth: Int32 = 0
                 stbtt_GetCodepointHMetrics(font, codePoint, &charWidth, nil)
-                self.charWidth = Int32(Float(charWidth) * scale)
+                self.charWidth = Int(Float(charWidth) * scale)
             } else {
                 charWidth = nil
             }
@@ -62,7 +62,7 @@ class Font {
         sizeInfoCache = SizeInfo(font: &fontInfo, fontSize: Float(fontSize), proportional: proportional)
         return sizeInfoCache!
     }
-    func width(of codePoint: Unicode.Scalar, fontSize: Int? = nil) -> Int32 {
+    func width(of codePoint: Unicode.Scalar, fontSize: Int? = nil) -> Int {
         if let fontSize = fontSize {
             self.fontSize = fontSize
         }
@@ -71,18 +71,18 @@ class Font {
         } else {
             var charWidth: Int32 = 0
             stbtt_GetCodepointHMetrics(&fontInfo, Int32(codePoint.value), &charWidth, nil)
-            return Int32(Float(charWidth) * sizeInfo.scale)
+            return Int(Float(charWidth) * sizeInfo.scale)
         }
     }
 
-    func width(of text: String, fontSize: Int? = nil) -> Int32 {
+    func width(of text: String, fontSize: Int? = nil) -> Int {
         if let fontSize = fontSize {
             self.fontSize = fontSize
         }
         if let charWidth = sizeInfo.charWidth {
-            return Int32(text.count) * charWidth
+            return text.count * charWidth
         } else {
-            var width: Int32 = 0
+            var width = 0
             for char in text.unicodeScalars {
                 width += self.width(of: char)
             }
@@ -90,8 +90,8 @@ class Font {
         }
     }
 
-    func getBitmap(_ string: String, buffer: UnsafeMutablePointer<UInt8>, width: Int32, height: Int32) {
-        var offsetX: Int32 = 0
+    func getBitmap(_ string: String, buffer: UnsafeMutablePointer<UInt8>, width: Int, height: Int) {
+        var offsetX: Int = 0
         for char in string.unicodeScalars {
             var bitmapWidth: Int32 = 0, bitmapHeight: Int32 = 0
             var xoff: Int32 = 0, yoff: Int32 = 0
@@ -99,16 +99,37 @@ class Font {
                 &fontInfo, 0, sizeInfo.scale, Int32(char.value),
                 &bitmapWidth, &bitmapHeight, &xoff, &yoff
             ) {
-                if offsetX + bitmapWidth > width {
+                if offsetX + Int(bitmapWidth) > width {
                     break;
                 }
                 for y in 0..<bitmapHeight {
                     for x in 0..<bitmapWidth {
                         let pixel = bitmap[Int(y * bitmapWidth + x)]
-                        let xIndex = x + xoff + offsetX
-                        let yIndex = sizeInfo.baseline + yoff + y
-                        let bufferIndex = Int(yIndex * width + xIndex)
+                        let xIndex = Int(x + xoff) + offsetX
+                        let yIndex = sizeInfo.baseline + Int(yoff + y)
+                        let bufferIndex = yIndex * width + xIndex
                         buffer[bufferIndex] = pixel
+                    }
+                }
+            }
+            offsetX += self.width(of: char)
+        }
+    }
+
+    func drawBitmap(_ string: String, drawPixel: (Point, UInt8) -> Void) {
+        var offsetX: Int = 0
+        for char in string.unicodeScalars {
+            var bitmapWidth: Int32 = 0, bitmapHeight: Int32 = 0
+            var xoff: Int32 = 0, yoff: Int32 = 0
+            if let bitmap = stbtt_GetCodepointBitmap(
+                &fontInfo, 0, sizeInfo.scale, Int32(char.value),
+                &bitmapWidth, &bitmapHeight, &xoff, &yoff
+            ) {
+                for y in 0..<bitmapHeight {
+                    for x in 0..<bitmapWidth {
+                        let point = Point(x: Int(x + xoff) + offsetX, y: sizeInfo.baseline + Int(yoff + y))
+                        let pixel = bitmap[Int(y * bitmapWidth + x)]
+                        drawPixel(point, pixel)
                     }
                 }
             }

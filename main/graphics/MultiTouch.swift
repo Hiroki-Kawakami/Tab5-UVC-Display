@@ -71,8 +71,8 @@ class MultiTouch {
         eventListener?(event)
     }
 
-    func task(_ read: @escaping () -> [Point]) {
-        Task(name: "MultiTouch", priority: 20) { _ in
+    func task(xCoreID: BaseType_t = 0, _ read: @escaping () -> [Point]) {
+        Task(name: "MultiTouch", priority: 20, xCoreID: xCoreID) { _ in
             while true {
                 let coordinates = read()
                 self.onTouch(coordinates: coordinates)

@@ -47,5 +47,31 @@ extension IDF {
             config.mode = PPA_TRANS_MODE_BLOCKING
             try IDF.Error.check(ppa_do_scale_rotate_mirror(client, &config))
         }
+
+        func rotate90WithMargin(
+            inputBuffer: UnsafeMutableBufferPointer<UInt16>,
+            outputBuffer: UnsafeMutableBufferPointer<UInt16>,
+            size: (width: UInt32, height: UInt32),
+            margin: UInt32
+        ) throws(IDF.Error) {
+            var config = ppa_srm_oper_config_t()
+            config.in.buffer = UnsafeRawPointer(inputBuffer.baseAddress)
+            config.in.pic_w = size.width
+            config.in.pic_h = size.height
+            config.in.block_w = size.width - margin
+            config.in.block_h = size.height
+            config.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565
+            config.out.buffer = UnsafeMutableRawPointer(outputBuffer.baseAddress)
+            config.out.buffer_size = UInt32(outputBuffer.count * MemoryLayout<UInt16>.size)
+            config.out.pic_w = size.height
+            config.out.pic_h = size.width
+            config.out.block_offset_y = margin
+            config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565
+            config.rotation_angle = PPA_SRM_ROTATION_ANGLE_90
+            config.scale_x = 1
+            config.scale_y = 1
+            config.mode = PPA_TRANS_MODE_BLOCKING
+            try IDF.Error.check(ppa_do_scale_rotate_mirror(client, &config))
+        }
     }
 }

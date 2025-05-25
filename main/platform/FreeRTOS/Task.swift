@@ -16,7 +16,7 @@ class Task {
     private(set) var shouldStop: Bool = false
 
     @discardableResult
-    init(name: UnsafePointer<CChar>, stackDepth: UInt32 = 4096, priority: UInt32, proc: @escaping (Task) -> Void) {
+    init(name: UnsafePointer<CChar>, stackDepth: UInt32 = 4096, priority: UInt32, xCoreID: BaseType_t = 0, proc: @escaping (Task) -> Void) {
         self.proc = proc
 
         let res = xTaskCreatePinnedToCore(
@@ -31,7 +31,7 @@ class Task {
             Unmanaged.passRetained(self).toOpaque(),
             priority,
             &self.handle,
-            0
+            xCoreID
         )
         if res != pdPASS {
             fatalError("Failed to create task: \(res)")

@@ -343,7 +343,7 @@ class M5StackTab5 {
                     let touchY = ptr.baseAddress!.advanced(by: 5)
                     var touchCount: UInt8 = 0
                     esp_lcd_touch_get_coordinates(handle, touchX, touchY, nil, &touchCount, 5)
-                    return (0..<Int(touchCount)).map { Point(x: Int16(touchX[$0]), y: Int16(touchY[$0])) }
+                    return (0..<Int(touchCount)).map { Point(x: Int(touchX[$0]), y: Int(touchY[$0])) }
                 }
             }
         }
