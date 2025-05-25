@@ -33,6 +33,7 @@ func main() throws(IDF.Error) {
 
     let controlWidth = 380
     var showControl = false
+    let frameBufferMutex = Semaphore.createMutex()!
     multiTouch.onEvent { event in
         switch event {
         case .tap(let point):
@@ -42,7 +43,9 @@ func main() throws(IDF.Error) {
                 showControl.toggle()
             }
             if showControl {
+                frameBufferMutex.take()
                 controlView.draw(into: frameBuffer, frameBufferSize: Size(width: 720, height: 1280))
+                frameBufferMutex.give()
             }
         default:
             break
@@ -117,10 +120,10 @@ func main() throws(IDF.Error) {
     }
     Task(name: "Draw", priority: 16) { _ in
         let ppa = try! IDF.PPAClient(operType: .srm)
-        var firstFrame = true
         for buffer in decodedBuffers {
             do throws(IDF.Error) {
-                firstFrame.toggle()
+                frameBufferMutex.take()
+                defer { frameBufferMutex.give() }
                 try ppa.rotate90WithMargin(
                     inputBuffer: buffer, outputBuffer: frameBuffer,
                     size: (width: 1280, height: 720), margin: showControl ? UInt32(controlWidth) : 0
