@@ -5,6 +5,8 @@ class AVIPlayer {
     let display: M5StackTab5.Display
     let frameBuffer: UnsafeMutableBufferPointer<UInt16>
     let audio: M5StackTab5.Audio
+    var audioDecoder: esp_audio_dec_handle_t? = nil
+    var pcmBuffer: UnsafeMutableBufferPointer<UInt8>? = nil
 
     init(
         display: M5StackTab5.Display,
@@ -31,6 +33,17 @@ class AVIPlayer {
         config.user_data = Unmanaged.passRetained(self).toOpaque()
         config.priority = 15
         try IDF.Error.check(avi_player_init(config))
+
+        // audio stream
+        esp_mp3_dec_register()
+        var decoderConfig = esp_audio_dec_cfg_t()
+        decoderConfig.type = ESP_AUDIO_TYPE_MP3
+        var audioDecoder: esp_audio_dec_handle_t?
+        if esp_audio_dec_open(&decoderConfig, &audioDecoder) == ESP_AUDIO_ERR_OK {
+            Log.info("Audio decoder opened successfully")
+            self.audioDecoder = audioDecoder
+            pcmBuffer = Memory.allocate(type: UInt8.self, capacity: 16 * 1024, capability: .spiram)
+        }
         audio.volume = 40
     }
 
@@ -69,12 +82,29 @@ class AVIPlayer {
     }
 
     func audioCallback(data: UnsafeMutablePointer<frame_data_t>) {
-        let audioBuffer = UnsafeMutableRawBufferPointer(
-            start: data.pointee.data,
-            count: Int(data.pointee.data_bytes)
-        )
         do throws(IDF.Error) {
-            try audio.write(audioBuffer)
+            if let decoder = audioDecoder {
+                var input = esp_audio_dec_in_raw_t()
+                input.buffer = data.pointee.data
+                input.len = UInt32(data.pointee.data_bytes)
+                input.frame_recover = ESP_AUDIO_DEC_RECOVERY_PLC
+                var output = esp_audio_dec_out_frame_t()
+                output.buffer = pcmBuffer!.baseAddress!
+                output.len = UInt32(pcmBuffer!.count)
+                esp_audio_dec_process(decoder, &input, &output)
+
+                let audioBuffer = UnsafeMutableRawBufferPointer(
+                    start: pcmBuffer!.baseAddress!,
+                    count: Int(output.decoded_size)
+                )
+                try audio.write(audioBuffer)
+            } else {
+                let audioBuffer = UnsafeMutableRawBufferPointer(
+                    start: data.pointee.data,
+                    count: data.pointee.data_bytes
+                )
+                try audio.write(audioBuffer)
+            }
         } catch {
             Log.error("Failed to play audio data: \(error)")
         }
@@ -109,7 +139,7 @@ func main() {
             frameBuffer: frameBuffer,
             audio: tab5.audio
         )
-        try player.play(file: "/sdcard/video8.avi")
+        try player.play(file: "/sdcard/video9.avi")
     } catch {
         Log.error("Failed to mount SD card: \(error)")
     }

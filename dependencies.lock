@@ -9,6 +9,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
+  espressif/esp_audio_codec:
+    component_hash: 04c2f0d5eca207cdfabd3aafc50ef4bca53532115ddf7689e5cfabd00eb88b02
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.3.0
   espressif/esp_codec_dev:
     component_hash: 18c22e1411224ba6103c4aca1b01bc740af33926756e9e106370a477d52bcba1
     dependencies:
@@ -75,12 +85,13 @@ dependencies:
     version: 5.4.1
 direct_dependencies:
 - espressif/cmake_utilities
+- espressif/esp_audio_codec
 - espressif/esp_codec_dev
 - espressif/esp_lcd_ili9881c
 - espressif/usb_host_msc
 - espressif/usb_host_uac
 - espressif/usb_host_uvc
 - idf
-manifest_hash: 93fdc5d75478e6b38912566e768e851937d766bbf3e544b29a353c962f477ae3
+manifest_hash: e9361f7ba348eea56a072bdfbb18393a8673f60e3424acd4e64db964f6a2029a
 target: esp32p4
 version: 2.0.0

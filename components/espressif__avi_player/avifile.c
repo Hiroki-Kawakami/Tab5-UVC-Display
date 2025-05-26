@@ -121,9 +121,9 @@ static int strl_parser(avi_typedef *AVI_file, const uint8_t *buffer, uint32_t le
         AVI_file->vids_height = strf->height;
         pdata += sizeof(AVI_VIDS_STRF_CHUNK);
     } else if (AUDS_ID == strh->fourcc_type) {
-        ESP_LOGI(TAG, "Find a audio stream");
+        ESP_LOGI(TAG, "Find a audio stream, codec=0x%"PRIx32"", strh->fourcc_codec);
         AVI_AUDS_STRF_CHUNK *strf = (AVI_AUDS_STRF_CHUNK*)pdata;
-        if (strf->FourCC != STRF_ID || (strf->size + 8 != sizeof(AVI_AUDS_STRF_CHUNK) && strf->size + 10 != sizeof(AVI_AUDS_STRF_CHUNK))) {
+        if (strf->FourCC != STRF_ID) {
             ESP_LOGE(TAG, "FourCC=0x%"PRIx32"|%"PRIx32", size=%"PRIu32"|%d", strf->FourCC, STRF_ID, strf->size, sizeof(AVI_AUDS_STRF_CHUNK));
             return -5;
         }
@@ -139,8 +139,8 @@ static int strl_parser(avi_typedef *AVI_file, const uint8_t *buffer, uint32_t le
 #endif
         AVI_file->auds_channels = strf->channels;
         AVI_file->auds_sample_rate = strf->samples_per_sec;
-        AVI_file->auds_bits = strf->bits_per_sample;
-        pdata += sizeof(AVI_AUDS_STRF_CHUNK);
+        AVI_file->auds_bits = 16;
+        pdata += strf->size + 8;
     } else {
         ESP_LOGW(TAG, "Unsupported stream 0x%"PRIu32"", strh->fourcc_type);
     }
