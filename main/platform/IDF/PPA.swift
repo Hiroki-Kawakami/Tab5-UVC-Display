@@ -24,53 +24,41 @@ extension IDF {
             self.client = client!
         }
 
-        func rotate90(
+        func fitScreen(
             inputBuffer: UnsafeMutableBufferPointer<UInt16>,
+            inputSize: Size,
             outputBuffer: UnsafeMutableBufferPointer<UInt16>,
-            size: (width: UInt32, height: UInt32),
+            outputSize: Size,
         ) throws(IDF.Error) {
-            var config = ppa_srm_oper_config_t()
-            config.in.buffer = UnsafeRawPointer(inputBuffer.baseAddress)
-            config.in.pic_w = size.width
-            config.in.pic_h = size.height
-            config.in.block_w = size.width
-            config.in.block_h = size.height
-            config.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565
-            config.out.buffer = UnsafeMutableRawPointer(outputBuffer.baseAddress)
-            config.out.buffer_size = UInt32(outputBuffer.count * MemoryLayout<UInt16>.size)
-            config.out.pic_w = size.height
-            config.out.pic_h = size.width
-            config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565
-            config.rotation_angle = PPA_SRM_ROTATION_ANGLE_90
-            config.scale_x = 1
-            config.scale_y = 1
-            config.mode = PPA_TRANS_MODE_BLOCKING
-            try IDF.Error.check(ppa_do_scale_rotate_mirror(client, &config))
-        }
+            let rotate =
+                (inputSize.width > inputSize.height && outputSize.width < outputSize.height) ||
+                (inputSize.width < inputSize.height && outputSize.width > outputSize.height)
+            let scale = min(
+                Float(rotate ? outputSize.height : outputSize.width) / Float(inputSize.width),
+                Float(rotate ? outputSize.width : outputSize.height) / Float(inputSize.height)
+            )
+            let outputFitSize = Size(
+                width: rotate ? Int(Float(inputSize.height) * scale) : Int(Float(inputSize.width) * scale),
+                height: rotate ? Int(Float(inputSize.width) * scale) : Int(Float(inputSize.height) * scale)
+            )
 
-        func rotate90WithMargin(
-            inputBuffer: UnsafeMutableBufferPointer<UInt16>,
-            outputBuffer: UnsafeMutableBufferPointer<UInt16>,
-            size: (width: UInt32, height: UInt32),
-            margin: UInt32
-        ) throws(IDF.Error) {
             var config = ppa_srm_oper_config_t()
             config.in.buffer = UnsafeRawPointer(inputBuffer.baseAddress)
-            config.in.pic_w = size.width
-            config.in.pic_h = size.height
-            config.in.block_w = size.width - margin
-            config.in.block_h = size.height
+            config.in.pic_w = UInt32(inputSize.width)
+            config.in.pic_h = UInt32(inputSize.height)
+            config.in.block_w = UInt32(inputSize.width)
+            config.in.block_h = UInt32(inputSize.height)
             config.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565
             config.out.buffer = UnsafeMutableRawPointer(outputBuffer.baseAddress)
             config.out.buffer_size = UInt32(outputBuffer.count * MemoryLayout<UInt16>.size)
-            config.out.pic_w = size.height
-            config.out.pic_h = size.width
-            config.out.block_offset_y = margin
+            config.out.pic_w = UInt32(outputSize.width)
+            config.out.pic_h = UInt32(outputSize.height)
+            config.out.block_offset_x = UInt32(outputSize.width - outputFitSize.width) / 2
+            config.out.block_offset_y = UInt32(outputSize.height - outputFitSize.height) / 2
             config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565
-            config.rotation_angle = PPA_SRM_ROTATION_ANGLE_90
-            config.scale_x = 1
-            config.scale_y = 1
-            config.mode = PPA_TRANS_MODE_BLOCKING
+            config.rotation_angle = rotate ? PPA_SRM_ROTATION_ANGLE_90 : PPA_SRM_ROTATION_ANGLE_0
+            config.scale_x = scale
+            config.scale_y = scale
             try IDF.Error.check(ppa_do_scale_rotate_mirror(client, &config))
         }
     }

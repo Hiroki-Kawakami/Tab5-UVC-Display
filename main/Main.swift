@@ -10,7 +10,7 @@ func app_main() {
 }
 func main() throws(IDF.Error) {
     let tab5 = try M5StackTab5.begin()
-    tab5.display.brightness = 1.0
+    tab5.display.brightness = 100
 
     let frameBuffer = tab5.display.frameBuffer
     let multiTouch: MultiTouch = MultiTouch()
@@ -28,7 +28,7 @@ func main() throws(IDF.Error) {
     }
     controlView.setBrightness = { brightness in
         controlView.brightness = max(10, min(100, brightness))
-        tab5.display.brightness = Float(controlView.brightness) / 100.0
+        tab5.display.brightness = controlView.brightness
     }
 
     let controlWidth = 380
@@ -56,7 +56,7 @@ func main() throws(IDF.Error) {
     let bufferPool = Queue<UnsafeMutableBufferPointer<UInt16>>(capacity: 2)!
     let decodedBuffers = Queue<UnsafeMutableBufferPointer<UInt16>>(capacity: 2)!
     for _ in 0..<2 {
-        if let buffer = IDF.JPEG.Decoder<UInt16>.allocateOutputBuffer(capacity: Int(tab5.display.width * tab5.display.height)) {
+        if let buffer = IDF.JPEG.Decoder<UInt16>.allocateOutputBuffer(capacity: tab5.display.pixels) {
             bufferPool.send(buffer)
         } else {
             Log.error("Failed to allocate memory for buffer")
@@ -124,11 +124,14 @@ func main() throws(IDF.Error) {
             do throws(IDF.Error) {
                 frameBufferMutex.take()
                 defer { frameBufferMutex.give() }
-                try ppa.rotate90WithMargin(
-                    inputBuffer: buffer, outputBuffer: frameBuffer,
-                    size: (width: 1280, height: 720), margin: showControl ? UInt32(controlWidth) : 0
-                )
-                tab5.display.drawBitmap(start: (0, 0), end: (720, 1280), data: frameBuffer.baseAddress!)
+                try ppa.fitScreen(
+                    inputBuffer: buffer, inputSize: Size(width: 1280, height: 720),
+                    outputBuffer: frameBuffer, outputSize: tab5.display.size) // TODO: Margin
+                // try ppa.rotate90WithMargin(
+                //     inputBuffer: buffer, outputBuffer: frameBuffer,
+                //     size: (width: 1280, height: 720), margin: showControl ? UInt32(controlWidth) : 0
+                // )
+                tab5.display.drawBitmap(rect: Rect(origin: .zero, size: tab5.display.size), data: frameBuffer.baseAddress!)
             } catch {
                 Log.error("Failed to draw image: \(error)")
             }

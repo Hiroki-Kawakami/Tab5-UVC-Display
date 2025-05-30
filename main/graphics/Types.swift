@@ -2,6 +2,8 @@ struct Point: Equatable, CustomStringConvertible {
     var x: Int
     var y: Int
 
+    static let zero = Point(x: 0, y: 0)
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         return lhs.x == rhs.x && lhs.y == rhs.y
     }
@@ -21,6 +23,8 @@ struct Size: Equatable, CustomStringConvertible {
     var width: Int
     var height: Int
 
+    static let zero = Size(width: 0, height: 0)
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         return lhs.width == rhs.width && lhs.height == rhs.height
     }
@@ -33,6 +37,8 @@ struct Size: Equatable, CustomStringConvertible {
 struct Rect: Equatable, CustomStringConvertible {
     var origin: Point
     var size: Size
+
+    static let zero = Rect(origin: Point.zero, size: Size.zero)
 
     var width: Int {
         return size.width
@@ -70,6 +76,22 @@ struct Rect: Equatable, CustomStringConvertible {
         self.origin = Point(x: x, y: y)
         self.size = Size(width: width, height: height)
     }
+    init(leftCenter: Point, size: Size) {
+        self.origin = Point(x: leftCenter.x, y: leftCenter.y - size.height / 2)
+        self.size = size
+    }
+    init(rightCenter: Point, size: Size) {
+        self.origin = Point(x: rightCenter.x - size.width, y: rightCenter.y - size.height / 2)
+        self.size = size
+    }
+    init(topCenter: Point, size: Size) {
+        self.origin = Point(x: topCenter.x - size.width / 2, y: topCenter.y)
+        self.size = size
+    }
+    init(bottomCenter: Point, size: Size) {
+        self.origin = Point(x: bottomCenter.x - size.width / 2, y: bottomCenter.y - size.height)
+        self.size = size
+    }
 
     func contains(_ point: Point) -> Bool {
         return point.x >= minX && point.x < maxX && point.y >= minY && point.y < maxY
@@ -95,6 +117,7 @@ enum Color {
     static let cyan = Color.rgb565(0x07FF)
     static let magenta = Color.rgb565(0xF81F)
     static let black = Color.rgb565(0x0000)
+    static let gray = Color.rgb565(0x7BEF)
 
     var rgb565: UInt16 {
         switch self {
