@@ -1,38 +1,38 @@
 fileprivate let Log = Logger(tag: "Font")
 
-class Font {
+class FontFamily {
 
-    private let partition: IDF.Partition?
+    static var `default`: FontFamily! = nil
+
+    enum DataSource {
+        case none
+        case partition(IDF.Partition)
+    }
+    private let dataSource: DataSource
     private let fontData: UnsafeRawPointer
     var fontInfo = stbtt_fontinfo()
 
     init?(from partition: IDF.Partition) {
-        self.partition = partition
+        self.dataSource = .partition(partition)
         guard let fontData = partition.mmap else {
             Log.error("Failed to map font partition")
             return nil
         }
         self.fontData = fontData.baseAddress!
-        if stbtt_InitFont(&fontInfo, fontData.baseAddress!, stbtt_GetFontOffsetForIndex(fontData.baseAddress!, 0)) == 0 {
+        if stbtt_InitFont(&fontInfo, self.fontData, stbtt_GetFontOffsetForIndex(self.fontData, 0)) == 0 {
             Log.error("Failed to initialize font")
             return nil
         }
     }
 
-    var fontSize: Int = 24 {
-        didSet {
-            if oldValue != fontSize {
-                sizeInfoCache = nil
-            }
-        }
+    func font(size: Int, proportional: Bool = true) -> Font {
+        Font(family: self, size: size, proportional: proportional)
     }
-    var proportional: Bool = true {
-        didSet {
-            if oldValue != proportional {
-                sizeInfoCache = nil
-            }
-        }
-    }
+}
+
+struct Font {
+    let family: FontFamily
+    let size: Int
 
     private struct SizeInfo {
         var scale: Float
@@ -54,40 +54,33 @@ class Font {
             }
         }
     }
-    private var sizeInfoCache: SizeInfo? = nil
-    private var sizeInfo: SizeInfo {
-        if let info = sizeInfoCache {
-            return info
-        }
-        sizeInfoCache = SizeInfo(font: &fontInfo, fontSize: Float(fontSize), proportional: proportional)
-        return sizeInfoCache!
-    }
-    func width(of codePoint: Unicode.Scalar, fontSize: Int? = nil) -> Int {
-        if let fontSize = fontSize {
-            self.fontSize = fontSize
-        }
-        if let charWidth = sizeInfo.charWidth {
-            return charWidth
-        } else {
-            var charWidth: Int32 = 0
-            stbtt_GetCodepointHMetrics(&fontInfo, Int32(codePoint.value), &charWidth, nil)
-            return Int(Float(charWidth) * sizeInfo.scale)
-        }
+    private let sizeInfo: SizeInfo
+    var proportional: Bool { sizeInfo.charWidth != nil }
+
+    fileprivate init(family: FontFamily, size: Int, proportional: Bool = true) {
+        self.family = family
+        self.size = size
+        self.sizeInfo = SizeInfo(font: &family.fontInfo, fontSize: Float(size), proportional: proportional)
     }
 
-    func width(of text: String, fontSize: Int? = nil) -> Int {
-        if let fontSize = fontSize {
-            self.fontSize = fontSize
+    func width(of codePoint: Unicode.Scalar) -> Int {
+        if let charWidth = sizeInfo.charWidth {
+            return charWidth
         }
+        var charWidth: Int32 = 0
+        stbtt_GetCodepointHMetrics(&family.fontInfo, Int32(codePoint.value), &charWidth, nil)
+        return Int(Float(charWidth) * sizeInfo.scale)
+    }
+
+    func width(of text: String) -> Int {
         if let charWidth = sizeInfo.charWidth {
             return text.count * charWidth
-        } else {
-            var width = 0
-            for char in text.unicodeScalars {
-                width += self.width(of: char)
-            }
-            return width
         }
+        var width = 0
+        for char in text.unicodeScalars {
+            width += self.width(of: char)
+        }
+        return width
     }
 
     func drawBitmap(_ string: String, maxWidth: Int? = nil, drawPixel: (Point, UInt8) -> Void) {
@@ -96,7 +89,7 @@ class Font {
             var bitmapWidth: Int32 = 0, bitmapHeight: Int32 = 0
             var xoff: Int32 = 0, yoff: Int32 = 0
             if let bitmap = stbtt_GetCodepointBitmap(
-                &fontInfo, 0, sizeInfo.scale, Int32(char.value),
+                &family.fontInfo, 0, sizeInfo.scale, Int32(char.value),
                 &bitmapWidth, &bitmapHeight, &xoff, &yoff
             ) {
                 if let maxWidth = maxWidth, offsetX + Int(bitmapWidth) > maxWidth {

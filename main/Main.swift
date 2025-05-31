@@ -10,9 +10,9 @@ func app_main() {
 }
 func main() throws(IDF.Error) {
     let tab5 = try M5StackTab5.begin()
+    let drawable = tab5.display.drawable
     tab5.display.brightness = 100
 
-    let frameBuffer = tab5.display.frameBuffer
     let multiTouch: MultiTouch = MultiTouch()
     multiTouch.task(xCoreID: 1) {
         tab5.touch.waitInterrupt()
@@ -20,43 +20,48 @@ func main() throws(IDF.Error) {
     }
 
     let fontPartition = IDF.Partition(type: 0x40, subtype: 0)!
-    let font = Font(from: fontPartition)!
-    let controlView = ControlView(size: Size(width: 380, height: 720), font: font, volume: 70, brightness: 100)
-    controlView.setVolume = { volume in
-        controlView.volume = max(0, min(100, volume))
-        tab5.audio.volume = controlView.volume
+    guard let fontFamily = FontFamily(from: fontPartition) else {
+        Log.error("Failed to load font from partition")
+        return
     }
-    controlView.setBrightness = { brightness in
-        controlView.brightness = max(10, min(100, brightness))
-        tab5.display.brightness = controlView.brightness
-    }
+    FontFamily.default = fontFamily
+
+    // let controlView = ControlView(size: Size(width: 380, height: 720), font: font, volume: 70, brightness: 100)
+    // controlView.setVolume = { volume in
+    //     controlView.volume = max(0, min(100, volume))
+    //     tab5.audio.volume = controlView.volume
+    // }
+    // controlView.setBrightness = { brightness in
+    //     controlView.brightness = max(10, min(100, brightness))
+    //     tab5.display.brightness = controlView.brightness
+    // }
 
     let controlWidth = 380
     var showControl = false
     let frameBufferMutex = Semaphore.createMutex()!
-    multiTouch.onEvent { event in
-        switch event {
-        case .tap(let point):
-            if showControl && point.y < controlWidth {
-                controlView.onTap(point: Point(x: controlWidth - point.y, y: point.x))
-            } else {
-                showControl.toggle()
-            }
-            if showControl {
-                frameBufferMutex.take()
-                controlView.draw(into: frameBuffer, frameBufferSize: Size(width: 720, height: 1280))
-                frameBufferMutex.give()
-            }
-        default:
-            break
-        }
-    }
+    // multiTouch.onEvent { event in
+    //     switch event {
+    //     case .tap(let point):
+    //         if showControl && point.y < controlWidth {
+    //             controlView.onTap(point: Point(x: controlWidth - point.y, y: point.x))
+    //         } else {
+    //             showControl.toggle()
+    //         }
+    //         if showControl {
+    //             frameBufferMutex.take()
+    //             controlView.draw(into: frameBuffer, frameBufferSize: Size(width: 720, height: 1280))
+    //             frameBufferMutex.give()
+    //         }
+    //     default:
+    //         break
+    //     }
+    // }
 
     // let frameBuffer = Memory.allocate(type: UInt16.self, capacity: 1280 * 720, capability: [.cacheAligned, .spiram])!
-    let bufferPool = Queue<UnsafeMutableBufferPointer<UInt16>>(capacity: 2)!
-    let decodedBuffers = Queue<UnsafeMutableBufferPointer<UInt16>>(capacity: 2)!
+    let bufferPool = Queue<UnsafeMutableRawBufferPointer>(capacity: 2)!
+    let decodedBuffers = Queue<UnsafeMutableRawBufferPointer>(capacity: 2)!
     for _ in 0..<2 {
-        if let buffer = IDF.JPEG.Decoder<UInt16>.allocateOutputBuffer(capacity: tab5.display.pixels) {
+        if let buffer = IDF.JPEG.Decoder.allocateOutputBuffer(size: tab5.display.pixels * 3) {
             bufferPool.send(buffer)
         } else {
             Log.error("Failed to allocate memory for buffer")
@@ -86,7 +91,7 @@ func main() throws(IDF.Error) {
     Task(name: "Decode", priority: 15) { _ in
         var lastTick: UInt32? = nil
         var frameCount = 0
-        let decoder = try! IDF.JPEG.createDecoderRgb565(rgbElementOrder: .bgr, rgbConversion: .bt709)
+        let decoder = try! IDF.JPEG.Decoder(outputFormat: .yuv422)
         for frame in frameQueue {
             let outputBuffer = bufferPool.receive()!
             let inputBuffer = UnsafeRawBufferPointer(
@@ -119,19 +124,17 @@ func main() throws(IDF.Error) {
         }
     }
     Task(name: "Draw", priority: 16) { _ in
-        let ppa = try! IDF.PPAClient(operType: .srm)
         for buffer in decodedBuffers {
             do throws(IDF.Error) {
                 frameBufferMutex.take()
                 defer { frameBufferMutex.give() }
-                try ppa.fitScreen(
-                    inputBuffer: buffer, inputSize: Size(width: 1280, height: 720),
-                    outputBuffer: frameBuffer, outputSize: tab5.display.size) // TODO: Margin
+                try drawable.drawBufferFit(buffer: UnsafeRawBufferPointer(buffer), size: Size(width: 1280, height: 720))
+                drawable.flush()
                 // try ppa.rotate90WithMargin(
                 //     inputBuffer: buffer, outputBuffer: frameBuffer,
                 //     size: (width: 1280, height: 720), margin: showControl ? UInt32(controlWidth) : 0
                 // )
-                tab5.display.drawBitmap(rect: Rect(origin: .zero, size: tab5.display.size), data: frameBuffer.baseAddress!)
+                // tab5.display.drawBitmap(rect: Rect(origin: .zero, size: tab5.display.size), data: frameBuffer.baseAddress!)
             } catch {
                 Log.error("Failed to draw image: \(error)")
             }
@@ -194,7 +197,8 @@ func main() throws(IDF.Error) {
                 }
 
                 try audioInput.start(sampleRate: config.sampleRate, channels: config.channels, bitWidth: config.bitWidth)
-                tab5.audio.volume = controlView.volume
+                // tab5.audio.volume = controlView.volume
+                tab5.audio.volume = 40
                 audioInput.onRxDone { _ in
                     do throws(IDF.Error) {
                         let readSize = try audioInput.read(buffer: audioBuffer)
@@ -215,126 +219,126 @@ func main() throws(IDF.Error) {
     }
 }
 
-class ControlView {
+// class ControlView {
 
-    let size: Size
-    let font: Font
-    private let viewBuffer: UnsafeMutableBufferPointer<UInt16>
+//     let size: Size
+//     let font: Font
+//     private let viewBuffer: UnsafeMutableBufferPointer<UInt16>
 
-    var volume: Int
-    var brightness: Int
+//     var volume: Int
+//     var brightness: Int
 
-    init(size: Size, font: Font, volume: Int, brightness: Int) {
-        self.size = size
-        self.font = font
-        self.volume = volume
-        self.brightness = brightness
+//     init(size: Size, font: Font, volume: Int, brightness: Int) {
+//         self.size = size
+//         self.font = font
+//         self.volume = volume
+//         self.brightness = brightness
 
-        let bufferSize = Int(size.width * size.height)
-        viewBuffer = Memory.allocate(type: UInt16.self, capacity: bufferSize, capability: [.cacheAligned, .spiram])!
-    }
+//         let bufferSize = Int(size.width * size.height)
+//         viewBuffer = Memory.allocate(type: UInt16.self, capacity: bufferSize, capability: [.cacheAligned, .spiram])!
+//     }
 
-    deinit {
-        viewBuffer.deallocate()
-    }
+//     deinit {
+//         viewBuffer.deallocate()
+//     }
 
-    func drawLine(from: Point, to: Point, color: Color) {
-        if from.x == to.x {
-            let startY = min(from.y, to.y, 0)
-            let endY = max(from.y, to.y, size.height - 1)
-            for y in startY...endY {
-                viewBuffer[Int(y * size.width) + Int(from.x)] = color.rgb565
-            }
-        } else if from.y == to.y {
-            let startX = min(from.x, to.x, 0)
-            let endX = max(from.x, to.x, size.width - 1)
-            for x in startX...endX {
-                viewBuffer[Int(from.y) * 720 + Int(x)] = color.rgb565
-            }
-        } else {
-            Log.error("Only horizontal or vertical lines are supported.")
-        }
-    }
+//     func drawLine(from: Point, to: Point, color: Color) {
+//         if from.x == to.x {
+//             let startY = min(from.y, to.y, 0)
+//             let endY = max(from.y, to.y, size.height - 1)
+//             for y in startY...endY {
+//                 viewBuffer[Int(y * size.width) + Int(from.x)] = color.rgb565
+//             }
+//         } else if from.y == to.y {
+//             let startX = min(from.x, to.x, 0)
+//             let endX = max(from.x, to.x, size.width - 1)
+//             for x in startX...endX {
+//                 viewBuffer[Int(from.y) * 720 + Int(x)] = color.rgb565
+//             }
+//         } else {
+//             Log.error("Only horizontal or vertical lines are supported.")
+//         }
+//     }
 
-    func drawRect(rect: Rect, color: Color) {
-        let startX = max(0, rect.minX)
-        let endX = min(size.width, rect.maxX)
-        let startY = max(0, rect.minY)
-        let endY = min(size.height, rect.maxY)
+//     func drawRect(rect: Rect, color: Color) {
+//         let startX = max(0, rect.minX)
+//         let endX = min(size.width, rect.maxX)
+//         let startY = max(0, rect.minY)
+//         let endY = min(size.height, rect.maxY)
 
-        for x in startX..<endX {
-            viewBuffer[Int(startY) * Int(size.width) + x] = color.rgb565
-            viewBuffer[Int(endY - 1) * Int(size.width) + x] = color.rgb565
-        }
-        for y in startY..<endY {
-            viewBuffer[y * Int(size.width) + startX] = color.rgb565
-            viewBuffer[y * Int(size.width) + endX - 1] = color.rgb565
-        }
-    }
+//         for x in startX..<endX {
+//             viewBuffer[Int(startY) * Int(size.width) + x] = color.rgb565
+//             viewBuffer[Int(endY - 1) * Int(size.width) + x] = color.rgb565
+//         }
+//         for y in startY..<endY {
+//             viewBuffer[y * Int(size.width) + startX] = color.rgb565
+//             viewBuffer[y * Int(size.width) + endX - 1] = color.rgb565
+//         }
+//     }
 
-    func drawText(_ text: String, at point: Point, fontSize: Int, color: Color) {
-        let labelSize = Size(width: font.width(of: text, fontSize: fontSize), height: fontSize)
-        let rect = Rect(origin: Point(x: point.x - labelSize.width / 2, y: point.y), size: labelSize)
-        font.drawBitmap(text) { (point, value) in
-            let point = rect.origin + point
-            viewBuffer[point.y * size.width + point.x] = value == 0 ? 0x0000 : 0xFFFF
-        }
-    }
+//     func drawText(_ text: String, at point: Point, fontSize: Int, color: Color) {
+//         let labelSize = Size(width: font.width(of: text, fontSize: fontSize), height: fontSize)
+//         let rect = Rect(origin: Point(x: point.x - labelSize.width / 2, y: point.y), size: labelSize)
+//         font.drawBitmap(text) { (point, value) in
+//             let point = rect.origin + point
+//             viewBuffer[point.y * size.width + point.x] = value == 0 ? 0x0000 : 0xFFFF
+//         }
+//     }
 
-    func drawButton(label: String, rect: Rect, fontSize: Int) {
-        drawRect(rect: rect, color: .white)
-        drawText(label, at: Point(x: rect.origin.x + rect.width / 2, y: rect.origin.y + (rect.height - fontSize) / 2), fontSize: fontSize, color: .white)
-    }
+//     func drawButton(label: String, rect: Rect, fontSize: Int) {
+//         drawRect(rect: rect, color: .white)
+//         drawText(label, at: Point(x: rect.origin.x + rect.width / 2, y: rect.origin.y + (rect.height - fontSize) / 2), fontSize: fontSize, color: .white)
+//     }
 
-    func drawStepper(label: String, value: Int, offsetY: Int) -> (Rect, Rect) {
-        drawText(label, at: Point(x: size.width / 2, y: offsetY), fontSize: 42, color: .white)
-        drawText("\(value)", at: Point(x: size.width / 2, y: offsetY + 50), fontSize: 60, color: .white)
+//     func drawStepper(label: String, value: Int, offsetY: Int) -> (Rect, Rect) {
+//         drawText(label, at: Point(x: size.width / 2, y: offsetY), fontSize: 42, color: .white)
+//         drawText("\(value)", at: Point(x: size.width / 2, y: offsetY + 50), fontSize: 60, color: .white)
 
-        let buttonSize = Size(width: 120, height: 70)
-        let minusRect = Rect(origin: Point(x: size.width / 2 - 130, y: offsetY + 120), size: buttonSize)
-        let plusRect = Rect(origin: Point(x: size.width / 2 + 10, y: offsetY + 120), size: buttonSize)
-        drawButton(label: "-", rect: minusRect, fontSize: 50)
-        drawButton(label: "+", rect: plusRect, fontSize: 50)
-        return (minusRect, plusRect)
-    }
+//         let buttonSize = Size(width: 120, height: 70)
+//         let minusRect = Rect(origin: Point(x: size.width / 2 - 130, y: offsetY + 120), size: buttonSize)
+//         let plusRect = Rect(origin: Point(x: size.width / 2 + 10, y: offsetY + 120), size: buttonSize)
+//         drawButton(label: "-", rect: minusRect, fontSize: 50)
+//         drawButton(label: "+", rect: plusRect, fontSize: 50)
+//         return (minusRect, plusRect)
+//     }
 
-    func drawControl() {
-        viewBuffer.initialize(repeating: 0)
-        drawLine(from: Point(x: 0, y: 0), to: Point(x: 0, y: size.height - 1), color: .white)
+//     func drawControl() {
+//         viewBuffer.initialize(repeating: 0)
+//         drawLine(from: Point(x: 0, y: 0), to: Point(x: 0, y: size.height - 1), color: .white)
 
-        (volMinusRect, volPlusRect) = drawStepper(label: "Volume", value: volume, offsetY: 80)
-        (briMinusRect, briPlusRect) = drawStepper(label: "Brightness", value: brightness, offsetY: 360)
-    }
+//         (volMinusRect, volPlusRect) = drawStepper(label: "Volume", value: volume, offsetY: 80)
+//         (briMinusRect, briPlusRect) = drawStepper(label: "Brightness", value: brightness, offsetY: 360)
+//     }
 
-    func draw(into frameBuffer: UnsafeMutableBufferPointer<UInt16>, frameBufferSize: Size) {
-        drawControl()
-        for viewY in 0..<size.height {
-            let frameX = viewY
-            for viewX in 0..<size.width {
-                let frameY = size.width - 1 - viewX
-                let viewIndex = viewY * size.width + viewX
-                let frameIndex = frameY * frameBufferSize.width + frameX
-                frameBuffer[frameIndex] = viewBuffer[viewIndex]
-            }
-        }
-    }
+//     func draw(into frameBuffer: UnsafeMutableBufferPointer<UInt16>, frameBufferSize: Size) {
+//         drawControl()
+//         for viewY in 0..<size.height {
+//             let frameX = viewY
+//             for viewX in 0..<size.width {
+//                 let frameY = size.width - 1 - viewX
+//                 let viewIndex = viewY * size.width + viewX
+//                 let frameIndex = frameY * frameBufferSize.width + frameX
+//                 frameBuffer[frameIndex] = viewBuffer[viewIndex]
+//             }
+//         }
+//     }
 
-    var volMinusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
-    var volPlusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
-    var briMinusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
-    var briPlusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
-    var setVolume: ((Int) -> Void)?
-    var setBrightness: ((Int) -> Void)?
+//     var volMinusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
+//     var volPlusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
+//     var briMinusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
+//     var briPlusRect = Rect(origin: Point(x: 0, y: 0), size: Size(width: 0, height: 0))
+//     var setVolume: ((Int) -> Void)?
+//     var setBrightness: ((Int) -> Void)?
 
-    func onTap(point: Point) {
-        if volMinusRect.contains(point) {
-            setVolume?(volume - 10)
-        } else if volPlusRect.contains(point) {
-            setVolume?(volume + 10)
-        } else if briMinusRect.contains(point) {
-            setBrightness?(brightness - 10)
-        } else if briPlusRect.contains(point) {
-            setBrightness?(brightness + 10)
-        }
-    }
-}
+//     func onTap(point: Point) {
+//         if volMinusRect.contains(point) {
+//             setVolume?(volume - 10)
+//         } else if volPlusRect.contains(point) {
+//             setVolume?(volume + 10)
+//         } else if briMinusRect.contains(point) {
+//             setBrightness?(brightness - 10)
+//         } else if briPlusRect.contains(point) {
+//             setBrightness?(brightness + 10)
+//         }
+//     }
+// }

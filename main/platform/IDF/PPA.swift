@@ -25,37 +25,35 @@ extension IDF {
         }
 
         func fitScreen(
-            inputBuffer: UnsafeMutableBufferPointer<UInt16>,
-            inputSize: Size,
-            outputBuffer: UnsafeMutableBufferPointer<UInt16>,
-            outputSize: Size,
+            input: (buffer: UnsafeRawBufferPointer, size: Size, colorMode: ppa_srm_color_mode_t),
+            output: (buffer: UnsafeMutableRawBufferPointer, size: Size, colorMode: ppa_srm_color_mode_t),
         ) throws(IDF.Error) {
             let rotate =
-                (inputSize.width > inputSize.height && outputSize.width < outputSize.height) ||
-                (inputSize.width < inputSize.height && outputSize.width > outputSize.height)
+                (input.size.width > input.size.height && output.size.width < output.size.height) ||
+                (input.size.width < input.size.height && output.size.width > output.size.height)
             let scale = min(
-                Float(rotate ? outputSize.height : outputSize.width) / Float(inputSize.width),
-                Float(rotate ? outputSize.width : outputSize.height) / Float(inputSize.height)
+                Float(rotate ? output.size.height : output.size.width) / Float(input.size.width),
+                Float(rotate ? output.size.width : output.size.height) / Float(input.size.height)
             )
             let outputFitSize = Size(
-                width: rotate ? Int(Float(inputSize.height) * scale) : Int(Float(inputSize.width) * scale),
-                height: rotate ? Int(Float(inputSize.width) * scale) : Int(Float(inputSize.height) * scale)
+                width: rotate ? Int(Float(input.size.height) * scale) : Int(Float(input.size.width) * scale),
+                height: rotate ? Int(Float(input.size.width) * scale) : Int(Float(input.size.height) * scale)
             )
 
             var config = ppa_srm_oper_config_t()
-            config.in.buffer = UnsafeRawPointer(inputBuffer.baseAddress)
-            config.in.pic_w = UInt32(inputSize.width)
-            config.in.pic_h = UInt32(inputSize.height)
-            config.in.block_w = UInt32(inputSize.width)
-            config.in.block_h = UInt32(inputSize.height)
-            config.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565
-            config.out.buffer = UnsafeMutableRawPointer(outputBuffer.baseAddress)
-            config.out.buffer_size = UInt32(outputBuffer.count * MemoryLayout<UInt16>.size)
-            config.out.pic_w = UInt32(outputSize.width)
-            config.out.pic_h = UInt32(outputSize.height)
-            config.out.block_offset_x = UInt32(outputSize.width - outputFitSize.width) / 2
-            config.out.block_offset_y = UInt32(outputSize.height - outputFitSize.height) / 2
-            config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565
+            config.in.buffer = input.buffer.baseAddress
+            config.in.pic_w = UInt32(input.size.width)
+            config.in.pic_h = UInt32(input.size.height)
+            config.in.block_w = UInt32(input.size.width)
+            config.in.block_h = UInt32(input.size.height)
+            config.in.srm_cm = input.colorMode
+            config.out.buffer = output.buffer.baseAddress
+            config.out.buffer_size = UInt32(output.buffer.count)
+            config.out.pic_w = UInt32(output.size.width)
+            config.out.pic_h = UInt32(output.size.height)
+            config.out.block_offset_x = UInt32(output.size.width - outputFitSize.width) / 2
+            config.out.block_offset_y = UInt32(output.size.height - outputFitSize.height) / 2
+            config.out.srm_cm = output.colorMode
             config.rotation_angle = rotate ? PPA_SRM_ROTATION_ANGLE_90 : PPA_SRM_ROTATION_ANGLE_0
             config.scale_x = scale
             config.scale_y = scale
