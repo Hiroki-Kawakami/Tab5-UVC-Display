@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include <dirent.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include "sdkconfig.h"
 #include "freertos/idf_additions.h"
+#include "driver/gptimer.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/i2c_master.h"

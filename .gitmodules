@@ -1,0 +1,3 @@
+[submodule "components/libjpeg-turbo/libjpeg-turbo"]
+	path = components/libjpeg-turbo/libjpeg-turbo
+	url = https://github.com/libjpeg-turbo/libjpeg-turbo

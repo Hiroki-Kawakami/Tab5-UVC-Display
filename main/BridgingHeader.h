@@ -9,3 +9,6 @@
 
 // M5Stack Tab5
 #include "board/BridgeImpl.h"
+
+// libjpeg-turbo
+#include "turbojpeg.h"

@@ -9,8 +9,8 @@
 #include "usb/uvc_host.h"
 #include "usb/uac_host.h"
 
-esp_err_t esp_lcd_dpi_panel_get_first_frame_buffer(esp_lcd_panel_handle_t panel, void **fb0) {
-    return esp_lcd_dpi_panel_get_frame_buffer(panel, 1, fb0);
+esp_err_t esp_lcd_dpi_panel_get_frame_buffers(esp_lcd_panel_handle_t panel, void **fb0, void **fb1) {
+    return esp_lcd_dpi_panel_get_frame_buffer(panel, 2, fb0, fb1);
 }
 
 /*
