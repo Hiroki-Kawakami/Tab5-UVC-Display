@@ -1,11 +1,10 @@
 #pragma once
-#include <math.h>
+#include "M5Stack-Swift-BSP/BridgingHeader.h" // BSP
 
-// ESP-IDF
-#include "platform/BridgeImpl.h"
+// USB Host
+#include "usb/usb_host.h"
+#include "usb/uvc_host.h"
+#include "usb/uac_host.h"
 
-// Graphics
-#include "graphics/BridgeImpl.h"
-
-// M5Stack Tab5
-#include "board/BridgeImpl.h"
+// libjpeg-turbo
+// #include "turbojpeg.h"

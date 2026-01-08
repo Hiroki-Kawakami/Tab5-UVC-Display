@@ -1,5 +1,7 @@
 build
 managed_components
+sdkconfig
 sdkconfig.old
 .vscode
 .DS_Store
+main/M5Stack-Swift-BSP

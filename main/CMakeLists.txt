@@ -4,10 +4,35 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "."
 )
 
+# Fetch BSP from GitHub if needed
+set(BSP_REPO_TAG "ab3a795ada87d4030a7b3cbe79854fb8a8a514dc")
+set(BSP_LINK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/M5Stack-Swift-BSP")
+if(EXISTS ${BSP_LINK_PATH} AND IS_SYMLINK ${BSP_LINK_PATH})
+    get_filename_component(REAL_PATH ${BSP_LINK_PATH} REALPATH)
+    if(NOT EXISTS ${REAL_PATH})
+        message(STATUS "Removing broken symlink: ${BSP_LINK_PATH}")
+        file(REMOVE ${BSP_LINK_PATH})
+    endif()
+endif()
+if(NOT EXISTS ${BSP_LINK_PATH})
+    message(STATUS "Fetch M5Stack-Swift-BSP from GitHub")
+    include(FetchContent)
+    FetchContent_Declare(
+        m5stack-swift-bsp
+        GIT_REPOSITORY https://github.com/Hiroki-Kawakami/M5Stack-Swift-BSP
+        GIT_TAG ${BSP_REPO_TAG}
+    )
+    FetchContent_Populate(m5stack-swift-bsp)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${m5stack-swift-bsp_SOURCE_DIR}
+            ${BSP_LINK_PATH}
+    )
+endif()
+
 idf_build_get_property(target IDF_TARGET)
 idf_build_get_property(arch IDF_TARGET_ARCH)
-set(SWIFT_TOOLCHAIN_DIR /Library/Developer/Toolchains/swift-latest.xctoolchain)
-set(CMAKE_Swift_COMPILER ${SWIFT_TOOLCHAIN_DIR}/usr/bin/swiftc CACHE FILEPATH "Swift compiler")
+set(CMAKE_Swift_COMPILER $ENV{HOME}/.swiftly/bin/swiftc CACHE FILEPATH "Swift compiler")
 
 if("${arch}" STREQUAL "xtensa")
     message(FATAL_ERROR "Not supported target: ${target}")
@@ -66,7 +91,7 @@ set(CMAKE_Swift_COMPILATION_MODE wholemodule)
 enable_language(Swift)
 
 # List of Swift source files to build.
-FILE(GLOB_RECURSE SwiftSources *.swift)
+FILE(GLOB_RECURSE SwiftSources FOLLOW_SYMLINKS *.swift)
 message(SwiftSources="${SwiftSources}")
 target_sources(${COMPONENT_LIB}
     PRIVATE
