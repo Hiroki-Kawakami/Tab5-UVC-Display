@@ -18,6 +18,22 @@ class ControlView<PixelFormat: Pixel> {
         LVGL.withLock { createDisplay() }
     }
 
+    var volume: Int = 50 {
+        didSet { self.tab5.audio.volume = volume }
+    }
+    private var volumeSlider: LVGL.Slider!
+    private lazy var onVolumeSliderValueChanged = FFI.Wrapper {
+        self.volume = Int(self.volumeSlider.getValue())
+    }
+
+    var brightness: Int = 50 {
+        didSet { self.tab5.display.brightness = brightness }
+    }
+    private var brightnessSlider: LVGL.Slider!
+    private lazy var onBrightnessSliderValueChanged = FFI.Wrapper {
+        self.brightness = Int(self.brightnessSlider.getValue())
+    }
+
     private func createDisplay() {
         let display = LVGL.Display.createDirectBufferDisplay(
             buffer: guiBuffers[0].baseAddress,
@@ -52,29 +68,27 @@ class ControlView<PixelFormat: Pixel> {
         let screen = LVGL.Screen.active
         screen.setStyleBgColor(LVGL.Color(hex: 0xCCCCCC))
 
+        let volumeLabel = LVGL.Label(parent: screen)
+        volumeLabel.setText("Volume")
+        volumeLabel.setWidth(280)
+        volumeLabel.align(.topMid, yOffset: 20)
+        volumeSlider = LVGL.Slider(parent: screen)
+        volumeSlider.setWidth(280)
+        volumeSlider.alignTo(base: volumeLabel, align: .outBottomMid, yOffset: 20)
+        volumeSlider.setRange(min: 1, max: 100)
+        volumeSlider.setValue(Int32(volume), anim: false)
+        volumeSlider.addEventCallback(filter: .valueChanged, callback: onVolumeSliderValueChanged)
+
         let brightnessLabel = LVGL.Label(parent: screen)
         brightnessLabel.setText("Brightness")
         brightnessLabel.setWidth(280)
-        brightnessLabel.align(.topMid, yOffset: 20)
-        let brightnessSlider = LVGL.Slider(parent: screen)
+        brightnessLabel.alignTo(base: volumeSlider, align: .outBottomMid, yOffset: 40)
+        brightnessSlider = LVGL.Slider(parent: screen)
         brightnessSlider.setWidth(280)
         brightnessSlider.alignTo(base: brightnessLabel, align: .outBottomMid, yOffset: 20)
         brightnessSlider.setRange(min: 1, max: 100)
-        brightnessSlider.setValue(Int32(tab5.display.brightness), anim: false)
-        let valueChanged = FFI.Wrapper<() -> Void> {
-            self.tab5.display.brightness = Int(brightnessSlider.getValue())
-        }
-        let released = FFI.Wrapper<() -> Void> {
-            self.saveSettings()
-        }
-        brightnessSlider.addEventCb({ obj in
-            let event = LVGL.Event(e: obj!)
-            Unmanaged<FFI.Wrapper<() -> Void>>.fromOpaque(event.getUserData()).takeUnretainedValue().value()
-        }, filter: .valueChanged, userData: Unmanaged.passRetained(valueChanged).toOpaque())
-        brightnessSlider.addEventCb({ obj in
-            let event = LVGL.Event(e: obj!)
-            Unmanaged<FFI.Wrapper<() -> Void>>.fromOpaque(event.getUserData()).takeUnretainedValue().value()
-        }, filter: .released, userData: Unmanaged.passRetained(released).toOpaque())
+        brightnessSlider.setValue(Int32(brightness), anim: false)
+        brightnessSlider.addEventCallback(filter: .valueChanged, callback: onBrightnessSliderValueChanged)
     }
 
     func push(fbIndex: Int) {
@@ -84,5 +98,14 @@ class ControlView<PixelFormat: Pixel> {
             output: (buffer: UnsafeMutableRawBufferPointer(tab5.display.frameBuffers[fbIndex]), size: Size(width: 720, height: 1280), block: Rect(x: 0, y: 0, width: 720, height: 480), colorMode: colorMode),
             rotate: 90
         )
+    }
+}
+
+fileprivate extension LVGL.ObjectProtocol {
+    func addEventCallback(filter: lv_event_code_t, callback: FFI.Wrapper<() -> ()>) {
+        addEventCb({
+            let event = LVGL.Event(e: $0!)
+            FFI.Wrapper<() -> ()>.unretained(event.getUserData())()
+        }, filter: filter, userData: callback.passUnretained())
     }
 }

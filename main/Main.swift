@@ -17,7 +17,7 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
     try LVGL.begin()
     let controlView = try ControlView(tab5: tab5) {}
     let frameBuffers = tab5.display.frameBuffers
-    tab5.display.brightness = 100
+    tab5.display.brightness = controlView.brightness
 
     let frameQueue = Queue<UnsafePointer<uvc_host_frame_t>>(capacity: 1)!
     let jpegDecoder = try IDF.JPEG.Decoder(outputFormat:
@@ -77,14 +77,23 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
         var frameBufferIndex = 0
         var frameCount = 0
         var start = timer.count
+        var firstFrameRendered = false
         while true {
             guard let decodeBuffer = rendererQueue.receive(timeout: 4) else {
+                if controlView.visible {
+                    LVGL.withLock {
+                        controlView.push(fbIndex: frameBufferIndex)
+                    }
+                }
                 continue
             }
 
+            if !firstFrameRendered {
+                controlView.visible = false
+                firstFrameRendered = true
+            }
             let nextFrameBufferIndex = (frameBufferIndex + 1) % frameBuffers.count
             let colorMode: IDF.PPAClient.SRMColorMode = PixelFormat.self == RGB565.self ? .rgb565 : .rgb888
-
 
             if controlView.visible {
                 try? ppa.srm(
@@ -145,8 +154,7 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
                 }
 
                 try audioInput.start(sampleRate: config.sampleRate, channels: config.channels, bitWidth: config.bitWidth)
-                // tab5.audio.volume = controlView.volume
-                tab5.audio.volume = 50
+                tab5.audio.volume = controlView.volume
                 audioInput.onRxDone { _ in
                     do throws(IDF.Error) {
                         let readSize = try audioInput.read(buffer: audioBuffer)
