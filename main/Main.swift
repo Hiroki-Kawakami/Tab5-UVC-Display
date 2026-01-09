@@ -34,7 +34,7 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
         switch USBHost.UVC.StreamFormat(frame.pointee.vs_format.format) {
         case .mjpeg:
             if !frameQueue.send(frame, timeout: 0) {
-                Log.warn("FRAME DROPPED!")
+                // Log.warn("FRAME DROPPED!")
                 return true
             }
             return false
@@ -45,45 +45,62 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
     }
 
     let ppa = try IDF.PPAClient(operType: .srm)
-    let decodeBuffer = Memory.allocate(type: PixelFormat.self, capacity: 1280 * 720, capability: [.cacheAligned, .spiram])!
+    let decodeBuffers = [UnsafeMutableRawBufferPointer]((0..<3).map({ _ in
+        Memory.allocateRaw(size: 1280 * 720 * MemoryLayout<PixelFormat>.size, capability: [.cacheAligned, .spiram])!
+    }))
+    let rendererQueue = Queue<UnsafeMutableRawBufferPointer>(capacity: 3)!
     let audioBuffer = Memory.allocateRaw(size: 16 * 1024, capability: [.cacheAligned, .spiram])!
     let timer = try IDF.GeneralPurposeTimer()
 
     Task(name: "Decoder", priority: 15, xCoreID: 0) { _ in
-        var frameBufferIndex = 0
-        var frameCount = 0
-        var start = timer.count
-        var decodeDurationMax: UInt64 = 0
-        while true {
-            guard let frame = frameQueue.receive(timeout: 4) else { continue }
+        var decodeBufferIndex = 0
+        for frame in frameQueue {
             defer { uvcDriver.returnFrame(frame) }
             let jpegData = UnsafeRawBufferPointer(
                 start: frame.pointee.data,
                 count: frame.pointee.data_len
             )
 
-            let nextFrameBufferIndex = (frameBufferIndex + 1) % frameBuffers.count
-            let decodeStart = timer.count
-            let decodeBuffer = UnsafeMutableRawBufferPointer(decodeBuffer)
+            let decodeBuffer = decodeBuffers[decodeBufferIndex]
             guard let _ = try? jpegDecoder.decode(
                 inputBuffer: jpegData,
-                outputBuffer: UnsafeMutableRawBufferPointer(decodeBuffer),
+                outputBuffer: decodeBuffer,
             ) else {
                 continue
             }
+            rendererQueue.send(decodeBuffer)
+            decodeBufferIndex = (decodeBufferIndex + 1) % decodeBuffers.count
+        }
+    }
+
+    Task(name: "Renderer", priority: 16, xCoreID: 0) { _ in
+        var frameBufferIndex = 0
+        var frameCount = 0
+        var start = timer.count
+        while true {
+            guard let decodeBuffer = rendererQueue.receive(timeout: 4) else {
+                continue
+            }
+
+            let nextFrameBufferIndex = (frameBufferIndex + 1) % frameBuffers.count
             let colorMode: IDF.PPAClient.SRMColorMode = PixelFormat.self == RGB565.self ? .rgb565 : .rgb888
-            try? ppa.srm(
-                input: (buffer: UnsafeRawBufferPointer(decodeBuffer), size: Size(width: 1280, height: 720), block: nil, colorMode: colorMode),
-                output: (buffer: UnsafeMutableRawBufferPointer(frameBuffers[nextFrameBufferIndex]), size: Size(width: 720, height: 1280), block: nil, colorMode: colorMode),
-                rotate: 90
-            )
-            let decodeDuration = timer.duration(from: decodeStart)
-            if decodeDuration > decodeDurationMax { decodeDurationMax = decodeDuration }
+
 
             if controlView.visible {
+                try? ppa.srm(
+                    input: (buffer: UnsafeRawBufferPointer(decodeBuffer), size: Size(width: 1280, height: 720), block: Rect(origin: .zero, size: Size(width: 800, height: 720)), colorMode: colorMode),
+                    output: (buffer: UnsafeMutableRawBufferPointer(frameBuffers[nextFrameBufferIndex]), size: Size(width: 720, height: 1280), offset: Point(x: 0, y: 480), scale: 1, colorMode: colorMode),
+                    rotate: 90
+                )
                 LVGL.withLock {
                     controlView.push(fbIndex: nextFrameBufferIndex)
                 }
+            } else {
+                try? ppa.srm(
+                    input: (buffer: UnsafeRawBufferPointer(decodeBuffer), size: Size(width: 1280, height: 720), block: nil, colorMode: colorMode),
+                    output: (buffer: UnsafeMutableRawBufferPointer(frameBuffers[nextFrameBufferIndex]), size: Size(width: 720, height: 1280), offset: .zero, scale: 1, colorMode: colorMode),
+                    rotate: 90
+                )
             }
 
             tab5.display.flush(fbNum: nextFrameBufferIndex)
@@ -92,10 +109,9 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
             frameCount += 1
             let now = timer.count
             if (now - start) >= 1000000 {
-                Log.info("\(frameCount)fps, decode: \(decodeDurationMax)")
+                Log.info("\(frameCount)fps")
                 frameCount = 0
                 start = now
-                decodeDurationMax = 0
             }
         }
     }
@@ -109,7 +125,7 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
                 resolution: (width: 1280, height: 720),
                 frameRate: 30,
                 pixelFormat: .mjpeg,
-                numberOfFrameBuffers: 2
+                numberOfFrameBuffers: 4
             )
             uvcDriver.onDisconnect {
                 uvcStreamSemaphore.give()
