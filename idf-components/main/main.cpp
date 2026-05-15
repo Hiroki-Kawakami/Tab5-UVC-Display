@@ -1,0 +1,64 @@
+#include <cstdio>
+#include "esp_log.h"
+#include "esp_lvgl_port.h"
+#include "bsp_tab5.h"
+#include "uvc_display.hpp"
+#include "platform_port.hpp"
+
+static const char *TAG = "main";
+
+namespace pf_port {
+
+void init(int fb_num, PixelFormat pixel_format) {
+    bsp_tab5_config_t bsp_config = {};
+    bsp_config.display.fb_num = fb_num;
+    bsp_tab5_init(&bsp_config);
+
+    lvgl_port_cfg_t config = {
+        .task_priority = 4,
+        .task_stack = 7168,
+        .task_affinity = 0,
+        .task_max_sleep_ms = 500,
+        .task_stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT,
+        .timer_period_ms = 5,
+    };
+    esp_err_t err = lvgl_port_init(&config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start LVGL: %s", esp_err_to_name(err));
+        assert(0);
+    }
+}
+
+void display_set_brightness(int value) {
+    bsp_tab5_display_set_brightness(value);
+}
+
+void *display_get_frame_buffer(int fb_index) {
+    return bsp_tab5_display_get_frame_buffer(fb_index);
+}
+
+void display_flush(int fb_index) {
+    bsp_tab5_display_flush(fb_index);
+}
+
+std::optional<std::tuple<int, int>> touch_get_point() {
+    esp_lcd_touch_point_data_t touch;
+    int touch_num = bsp_tab5_touch_read(&touch, 1);
+    if (touch_num > 0) {
+        return std::make_tuple(touch.x, touch.y);
+    }
+    return std::nullopt;
+}
+
+void *psram_malloc(size_t size) {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+}
+void *psram_malloc_dma(size_t size) {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+}
+
+}
+
+extern "C" void app_main() {
+    uvc_display_app();
+}

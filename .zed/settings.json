@@ -1,0 +1,17 @@
+{
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "arguments": [
+          "--header-insertion=never",
+          "--clang-tidy",
+          "--enable-config",
+          "--query-driver=/nix/store/fi6swqk4m4md2hdfywi7lls0wxbbz08p-gcc-wrapper-14.3.0/bin/*",
+          "--compile-commands-dir=build",
+          // "--query-driver=/nix/store/1kifmsiffz0z4vgafrwi413wh77q98zf-riscv32-esp-elf-esp-idf-v5.5.4/bin/riscv32-esp-elf-*",
+          // "--compile-commands-dir=esp32p4/build",
+        ],
+      },
+    },
+  },
+}
