@@ -2,7 +2,9 @@
 #include <tuple>
 #include <optional>
 #include <cstdint>
+#include <cstddef>
 #include "driver/ppa.h"
+#include "driver/jpeg_decode.h"
 
 namespace pf_port {
 
@@ -53,6 +55,31 @@ public:
 private:
     ppa_client_handle_t ppa_client_{nullptr};
     ppa_srm_oper_config_t oper_config_{};
+};
+
+class JpegDecoder {
+public:
+    struct PictureInfo {
+        uint32_t width;
+        uint32_t height;
+    };
+
+    JpegDecoder();
+    ~JpegDecoder();
+
+    JpegDecoder(const JpegDecoder &) = delete;
+    JpegDecoder &operator=(const JpegDecoder &) = delete;
+
+    static std::optional<PictureInfo> getInfo(const void *stream, size_t stream_size);
+
+    void setOutputFormat(PixelFormat pixel_format);
+    Error decode(const void *stream, size_t stream_size,
+                 void *output, size_t output_size,
+                 size_t *out_size);
+
+private:
+    jpeg_decoder_handle_t decoder_{nullptr};
+    jpeg_decode_cfg_t cfg_{};
 };
 
 }

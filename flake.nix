@@ -33,6 +33,8 @@
             pkgs.gcc
             pkgs.ccache
             pkgs.SDL2
+            pkgs.libjpeg
+            pkgs.pkg-config
           ];
           shellHook = ''
             export ESP_IDF_VERSION="5.4"

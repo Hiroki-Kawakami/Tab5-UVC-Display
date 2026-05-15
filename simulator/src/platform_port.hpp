@@ -2,6 +2,7 @@
 #include <tuple>
 #include <optional>
 #include <cstdint>
+#include <cstddef>
 
 namespace pf_port {
 
@@ -61,6 +62,30 @@ private:
     } out_;
     int rotation_ = 0;
     float scale_x_ = 1.0f, scale_y_ = 1.0f;
+};
+
+class JpegDecoder {
+public:
+    struct PictureInfo {
+        uint32_t width;
+        uint32_t height;
+    };
+
+    JpegDecoder();
+    ~JpegDecoder();
+
+    JpegDecoder(const JpegDecoder &) = delete;
+    JpegDecoder &operator=(const JpegDecoder &) = delete;
+
+    static std::optional<PictureInfo> getInfo(const void *stream, size_t stream_size);
+
+    void setOutputFormat(PixelFormat pixel_format);
+    Error decode(const void *stream, size_t stream_size,
+                 void *output, size_t output_size,
+                 size_t *out_size);
+
+private:
+    PixelFormat out_fmt_ = PixelFormat::RGB888;
 };
 
 }
