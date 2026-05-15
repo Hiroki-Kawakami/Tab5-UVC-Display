@@ -24,7 +24,7 @@ dependencies:
       type: service
     version: 1.1.5
   espressif/esp_codec_dev:
-    component_hash: 9293329ccb361f67c6e847ab8f693b2d9158b2e438eff583c28558c29cdf3dca
+    component_hash: 896c67360ae1f8dedaf8a53dfe48c015317fa455f061a5165307892296990028
     dependencies:
     - name: idf
       require: private
@@ -32,7 +32,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.5.9
+    version: 1.5.10
   espressif/esp_hosted:
     component_hash: ef6bc803451fab3c3f9a679bbc1c48fba0ceeeabc5af4178dd7d2300fafa423e
     dependencies:
@@ -114,11 +114,11 @@ dependencies:
       type: service
     version: 1.0.2
   espressif/esp_lvgl_port:
-    component_hash: b6360960f47b6776462e7092861b3ea66477ffb762a01baa0aecbb3d74cd50f4
+    component_hash: cca194347416db5f7fbe53e3bf788266061032c6b094d0186e9c988d6e8ff218
     dependencies:
     - name: idf
       require: private
-      version: '>=5.1'
+      version: '>=5.2'
     - name: lvgl/lvgl
       registry_url: https://components.espressif.com
       require: public
@@ -126,7 +126,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.7.2
+    version: 2.8.0
   espressif/esp_serial_slave_link:
     component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
     dependencies:
@@ -157,6 +157,30 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.8.5
+  espressif/usb_host_uvc:
+    component_hash: 9370ff8e8701cb62e0733557458a1146334dc4f0b5c84efd33828b98573c6a59
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    - linux
+    version: 2.5.0
   idf:
     source:
       type: idf
@@ -177,7 +201,8 @@ direct_dependencies:
 - espressif/esp_lcd_touch_st7123
 - espressif/esp_lvgl_port
 - espressif/esp_wifi_remote
+- espressif/usb_host_uvc
 - idf
-manifest_hash: 43f338acf820fe312578944a694b4ea7cd954cf53a570d61b4641beaf93bf83c
+manifest_hash: f532fe9fa090e05892d3993681cfa72ed5bfb380bf1a8b134fb6d9a0c7a48b86
 target: esp32p4
 version: 2.0.0

@@ -19,6 +19,9 @@ typedef struct {
         bool interrupt;
     } touch;
     struct {
+        bool usb5v_en;
+    } usb;
+    struct {
         bsp_wifi_mode_t mode;
     } wifi;
     struct {

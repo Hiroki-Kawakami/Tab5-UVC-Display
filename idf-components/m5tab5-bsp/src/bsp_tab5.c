@@ -69,7 +69,7 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     // Initialize PI4IOE2 (address 0x44)
     err = pi4io_init(i2c0, 0x44, (pi4io_pin_config_t[8]){
         [0] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true },   // WLAN_PWR_EN
-        [3] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // USB5V_EN
+        [3] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = config->usb.usb5v_en }, // USB5V_EN
         [4] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // PWROFF_PLUSE
         [5] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // nCHG_QC_EN
         [6] = { PI4IO_PIN_MODE_INPUT },                           // CHG_STAT

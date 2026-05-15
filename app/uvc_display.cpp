@@ -1,6 +1,7 @@
 #include "uvc_display.hpp"
 #include "platform_port.hpp"
 #include "lvgl.hpp"
+#include "preview_screen.hpp"
 
 #define GUI_WIDTH  360
 #define GUI_HEIGHT 640
@@ -38,23 +39,11 @@ static void lvgl_setup() {
     });
 }
 
-static void hello_world(void *args) {
-    auto btn = lv_button_create(lv_screen_active());
-    lv_obj_set_pos(btn, 10, 10);
-    lv_obj_set_size(btn, 120, 50);
-    lv_obj_add_event_cb(btn, [](lv_event_t *e){
-        static uint8_t cnt = 0;
-        lv_obj_t * label = lv_obj_get_child(lv_event_get_target_obj(e), 0);
-        lv_label_set_text_fmt(label, "Button: %d", ++cnt);
-    }, LV_EVENT_CLICKED, NULL);
-    auto label = lv_label_create(btn);
-    lv_label_set_text(label, "Button");
-    lv_obj_center(label);
-}
-
 void uvc_display_app() {
     pf_port::init(2, pf_port::PixelFormat::RGB565);
     lvgl_setup();
-    lv_async_call(hello_world, NULL);
+    lv_async_call([](){
+        screen_manager.push(std::make_unique<PreviewScreen>());
+    });
     pf_port::display_set_brightness(80);
 }

@@ -12,6 +12,7 @@ namespace pf_port {
 void init(int fb_num, PixelFormat pixel_format) {
     bsp_tab5_config_t bsp_config = {};
     bsp_config.display.fb_num = fb_num;
+    bsp_config.usb.usb5v_en = true;
     bsp_tab5_init(&bsp_config);
 
     lvgl_port_cfg_t config = {
