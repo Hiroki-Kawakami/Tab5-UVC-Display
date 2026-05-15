@@ -19,7 +19,9 @@ public:
     };
 
     void install();
-    void open(int width, int height, float frame_rate);
+    esp_err_t open(int width, int height, float frame_rate);
+    void start();
+    void returnFrame(const uvc_host_frame_t *frame);
     void setCallback(Callback *callback) { callback_ = callback; }
 
 private:

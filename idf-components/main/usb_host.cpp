@@ -48,7 +48,7 @@ void UVC::install() {
     ESP_LOGI(TAG, "UVC host driver installed");
 }
 
-void UVC::open(int width, int height, float fps) {
+esp_err_t UVC::open(int width, int height, float fps) {
     uvc_host_stream_config_t config = {};
     config.event_cb = [](const uvc_host_stream_event_data_t *event, void *user_ctx){
         auto uvc = static_cast<UVC*>(user_ctx);
@@ -64,13 +64,22 @@ void UVC::open(int width, int height, float fps) {
     config.vs_format.v_res = height;
     config.vs_format.fps = fps;
     config.vs_format.format = UVC_VS_FORMAT_MJPEG;
-    config.advanced.number_of_frame_buffers = 2;
+    config.advanced.number_of_frame_buffers = 4;
     config.advanced.frame_size = 2048 * 1024;
     config.advanced.frame_heap_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED;
     config.advanced.number_of_urbs = 3;
     config.advanced.urb_size = 4 * 1024;
     auto res = uvc_host_stream_open(&config, pdMS_TO_TICKS(1000), &stream_);
     ESP_LOGI(TAG, "uvc_host_stream_open: result=%s", esp_err_to_name(res));
+    return res;
+}
+
+void UVC::start() {
+    ESP_ERROR_CHECK(uvc_host_stream_start(stream_));
+}
+
+void UVC::returnFrame(const uvc_host_frame_t *frame) {
+    uvc_host_frame_return(stream_, const_cast<uvc_host_frame_t*>(frame));
 }
 
 }

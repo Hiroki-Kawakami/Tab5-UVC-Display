@@ -12,7 +12,7 @@ JpegDecoder::JpegDecoder() {
     ESP_ERROR_CHECK(jpeg_new_decoder_engine(&engine_cfg, &decoder_));
 
     cfg_.output_format = JPEG_DECODE_OUT_FORMAT_RGB888;
-    cfg_.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_RGB;
+    cfg_.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
     cfg_.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 }
 

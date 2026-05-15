@@ -1,4 +1,4 @@
 dependencies:
   idf: ">=5.3"
   espressif/esp_lvgl_port: ^2.7.0
-  espressif/usb_host_uvc: 2.5.0
+  espressif/usb_host_uvc: 2.2.0
