@@ -40,7 +40,7 @@ static void lvgl_setup() {
 }
 
 void uvc_display_app() {
-    pf_port::init(2, pf_port::PixelFormat::RGB565);
+    pf_port::init(3, pf_port::PixelFormat::RGB565);
     lvgl_setup();
     lv_async_call([](){
         screen_manager.push(std::make_unique<PreviewScreen>());

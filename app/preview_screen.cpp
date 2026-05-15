@@ -40,7 +40,7 @@ void renderer_task(void *) {
         const uvc_host_frame_t *frame;
         if (xQueueReceive(frame_queue, &frame, portMAX_DELAY) != pdTRUE) continue;
 
-        int next = (fb_index + 1) % 2;
+        int next = (fb_index + 1) % 3;
         void *out_fb = pf_port::display_get_frame_buffer(next);
         esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb);
         uvc.returnFrame(frame);
