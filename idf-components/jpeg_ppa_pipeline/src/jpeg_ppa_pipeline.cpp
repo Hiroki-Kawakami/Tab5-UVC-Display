@@ -175,16 +175,26 @@ Pipeline::~Pipeline() {
     delete impl_;
 }
 
-static uint32_t s_bpp_for_color_mode(ppa_srm_color_mode_t cm) {
+// bit_depth/8 truncates for YUV420 (12 bpp -> 1.5 bytes/pixel), so callers
+// using this for output buffer sizing should multiply by bit_depth and divide
+// by 8 explicitly instead of going through this helper.
+static uint32_t s_bytes_per_pixel_int(ppa_srm_color_mode_t cm) {
     color_space_pixel_format_t f{};
     f.color_type_id = cm;
     return color_hal_pixel_format_get_bit_depth(f) / 8;
+}
+
+static uint32_t s_bit_depth(ppa_srm_color_mode_t cm) {
+    color_space_pixel_format_t f{};
+    f.color_type_id = cm;
+    return color_hal_pixel_format_get_bit_depth(f);
 }
 
 static jpeg_dec_output_format_t s_jpeg_out_for_ppa(ppa_srm_color_mode_t cm) {
     switch (cm) {
     case PPA_SRM_COLOR_MODE_RGB565: return JPEG_DECODE_OUT_FORMAT_RGB565;
     case PPA_SRM_COLOR_MODE_RGB888: return JPEG_DECODE_OUT_FORMAT_RGB888;
+    case PPA_SRM_COLOR_MODE_YUV420: return JPEG_DECODE_OUT_FORMAT_YUV420;
     default:                        return JPEG_DECODE_OUT_FORMAT_RGB565;
     }
 }
@@ -200,8 +210,10 @@ esp_err_t Pipeline::init(const Config &cfg)
 
     impl_->cfg = cfg;
     impl_->strip_count = cfg.pic_h / cfg.strip_h;
-    impl_->bytes_per_pixel = s_bpp_for_color_mode(cfg.input_color_mode);
-    impl_->strip_byte_size = cfg.strip_h * cfg.pic_w * impl_->bytes_per_pixel;
+    // Use bit_depth/8 for output FB sizing (integer bpp formats only).
+    impl_->bytes_per_pixel = s_bytes_per_pixel_int(cfg.out_color_mode);
+    // Use bit_depth math for the intermediate strip so YUV420 (12 bpp -> 1.5 B/px) sizes correctly.
+    impl_->strip_byte_size = cfg.strip_h * cfg.pic_w * s_bit_depth(cfg.input_color_mode) / 8;
 
     // Allocate SRAM strip buffers (internal RAM, DMA capable).
     for (uint32_t i = 0; i < cfg.ring_count; i++) {

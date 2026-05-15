@@ -14,6 +14,7 @@ extern "C" {
 typedef struct {
     struct {
         uint8_t fb_num;
+        bsp_pixel_format_t pixel_format;
     } display;
     struct {
         bool interrupt;

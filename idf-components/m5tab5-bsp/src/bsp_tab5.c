@@ -91,7 +91,7 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
         err = st7123_lcd_init(&(st7123_lcd_config_t){
             .backlight_gpio = GPIO_NUM_22,
             .size = (bsp_size_t){ 720, 1280 },
-            .pixel_format = BSP_PIXEL_FORMAT_RGB565,
+            .pixel_format = config->display.pixel_format,
             .fb_num = config->display.fb_num,
         }, &st7123_lcd);
         BSP_RETURN_ERR(err);
@@ -112,7 +112,7 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
         err = ili9881c_lcd_init(&(ili9881c_lcd_config_t){
             .backlight_gpio = GPIO_NUM_22,
             .size = (bsp_size_t){ 720, 1280 },
-            .pixel_format = BSP_PIXEL_FORMAT_RGB565,
+            .pixel_format = config->display.pixel_format,
             .fb_num = config->display.fb_num,
         }, &ili9881c);
         BSP_RETURN_ERR(err);

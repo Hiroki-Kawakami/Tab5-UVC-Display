@@ -17,18 +17,16 @@ constexpr int STREAM_H = 720;
 constexpr int DISP_W = 720;
 constexpr int DISP_H = 1280;
 
-// 1280x720 YUV420 → RGB565 decode emits MCUs in 16-line bands. Pick the
-// smallest legal strip height (one MCU row = 16 lines) so each SRAM ring slot
-// stays cheap (40KB) and the decoder can hand off the very first strip to PPA
-// as early as possible. ring_count buffers consume ring_count * 40KB of
-// internal SRAM; the remaining strips of a frame cycle through the same
-// buffers via dma2d_append() backpressure — each buffer is re-linked into
-// the chain only after PPA finishes consuming the previous frame's strip in
-// that ring slot. We need ring_count strictly larger than
-// (PPA-strip-time / JPEG-strip-time + 1) so DMA never hits next=NULL before
-// PPA frees a slot.
+// strip_h must be a multiple of the JPEG MCU height. The UVC camera here
+// outputs YUV422 (mcu_y = 8); we use STRIP_H=16 = 2 MCU rows so each strip
+// covers more pixels and we issue fewer PPA submissions per frame (45
+// strips instead of 90). 16 lines × 1280 px × 3 B (RGB888) = 60 KiB per
+// slot; RING_COUNT=5 fits in 300 KiB of MALLOC_CAP_INTERNAL.
+// Backpressure: a descriptor is only re-linked into the chain after PPA
+// finishes its previous strip in the same ring slot. We need
+// ring_count > PPA-strip / JPEG-strip ratio.
 constexpr int STRIP_H = 16;
-constexpr int RING_COUNT = 8;
+constexpr int RING_COUNT = 5;
 
 usb_host::UVC uvc;
 jpeg_ppa::Pipeline *pipeline;
@@ -78,10 +76,10 @@ void PreviewScreen::onEnter() {
     pcfg.pic_h = STREAM_H;
     pcfg.strip_h = STRIP_H;
     pcfg.ring_count = RING_COUNT;
-    pcfg.input_color_mode = PPA_SRM_COLOR_MODE_RGB565;
+    pcfg.input_color_mode = PPA_SRM_COLOR_MODE_RGB888;
     pcfg.out_pic_w = DISP_W;
     pcfg.out_pic_h = DISP_H;
-    pcfg.out_color_mode = PPA_SRM_COLOR_MODE_RGB565;
+    pcfg.out_color_mode = PPA_SRM_COLOR_MODE_RGB888;
     pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
     pcfg.scale_x = 1.0f;
     pcfg.scale_y = 1.0f;

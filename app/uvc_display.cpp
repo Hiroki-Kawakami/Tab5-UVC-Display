@@ -13,7 +13,7 @@ static void lvgl_setup() {
     gui_fb = (uint16_t*)pf_port::psram_malloc(GUI_WIDTH * GUI_HEIGHT * 2);
     gui_srm = new pf_port::SRMClient();
     gui_srm->setInputBlock(GUI_WIDTH, GUI_HEIGHT, GUI_WIDTH, GUI_HEIGHT, 0, 0, pf_port::PixelFormat::RGB565);
-    gui_srm->setOutputBlock(720, 1280, 0, 0, pf_port::PixelFormat::RGB565);
+    gui_srm->setOutputBlock(720, 1280, 0, 0, pf_port::PixelFormat::RGB888);
     gui_srm->setScale(2, 2);
 
     auto disp = lv_display_create(GUI_WIDTH, GUI_HEIGHT);
