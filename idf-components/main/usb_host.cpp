@@ -54,6 +54,16 @@ esp_err_t UVC::open(int width, int height, float fps) {
     uvc_host_stream_config_t config = {};
     config.event_cb = [](const uvc_host_stream_event_data_t *event, void *user_ctx){
         auto uvc = static_cast<UVC*>(user_ctx);
+        if (event->type == UVC_HOST_DEVICE_DISCONNECTED) {
+            // Per the IDF UVC example, the stream must be closed from this
+            // callback so the USB host can free the device record. Skipping
+            // this leaves the device stuck and every subsequent
+            // uvc_host_stream_open() returns ESP_ERR_INVALID_STATE.
+            uvc_host_stream_close(event->device_disconnected.stream_hdl);
+            if (uvc->stream_ == event->device_disconnected.stream_hdl) {
+                uvc->stream_ = nullptr;
+            }
+        }
         if (uvc->callback_) uvc->callback_->onEvent(event);
     };
     config.frame_cb = [](const uvc_host_frame_t *frame, void *user_ctx){
@@ -80,6 +90,13 @@ void UVC::start() {
     ESP_ERROR_CHECK(uvc_host_stream_start(stream_));
 }
 
+void UVC::close() {
+    if (!stream_) return;
+    uvc_host_stream_stop(stream_);
+    uvc_host_stream_close(stream_);
+    stream_ = nullptr;
+}
+
 void UVC::returnFrame(const uvc_host_frame_t *frame) {
     uvc_host_frame_return(stream_, const_cast<uvc_host_frame_t*>(frame));
 }
@@ -87,7 +104,14 @@ void UVC::returnFrame(const uvc_host_frame_t *frame) {
 // --- UAC ---------------------------------------------------------------
 
 void UAC::install(size_t stack_size, size_t priority, int core_id) {
-    rx_detected_sem_ = xSemaphoreCreateBinary();
+    rx_detected_sem_   = xSemaphoreCreateBinary();
+    close_pending_sem_ = xSemaphoreCreateBinary();
+    // Priority must be higher than the UAC driver task so this preempts
+    // and finishes uac_host_device_close before the driver's disconnect
+    // loop spins another iteration.
+    xTaskCreatePinnedToCore(&UAC::closerTaskFn, "uac_closer", 4096, this,
+                            priority + 5, &closer_task_, core_id);
+
     uac_host_driver_config_t config = {};
     config.create_background_task = true;
     config.task_priority = priority;
@@ -97,6 +121,20 @@ void UAC::install(size_t stack_size, size_t priority, int core_id) {
     config.callback_arg = this;
     ESP_ERROR_CHECK(uac_host_install(&config));
     ESP_LOGI(TAG, "UAC host driver installed");
+}
+
+void UAC::closerTaskFn(void *arg) {
+    auto self = static_cast<UAC*>(arg);
+    while (true) {
+        if (xSemaphoreTake(self->close_pending_sem_, portMAX_DELAY) != pdTRUE) continue;
+        auto h = self->pending_close_;
+        if (!h) continue;
+        self->pending_close_ = nullptr;
+        // Outside the UAC driver task's call stack, so try_lock doesn't hit
+        // the recursive/corrupted-lock path that crashes when invoked from
+        // the disconnect callback context.
+        uac_host_device_close(h);
+    }
 }
 
 void UAC::driverEventCb(uint8_t addr, uint8_t iface_num,
@@ -128,8 +166,19 @@ void UAC::deviceEventCb(uac_host_device_handle_t handle,
         ESP_LOGW(TAG, "UAC transfer error");
         break;
     case UAC_HOST_DRIVER_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "UAC device disconnected");
-        uac_host_device_close(handle);
+        // The IDF UAC driver loops in _uac_host_device_disconnected, firing
+        // this callback every iteration, until we ack with
+        // uac_host_device_close(). Calling that directly from here corrupts
+        // the interface lock state in our setup, so we hand it to the
+        // closer task (higher priority) instead. Guard with device_ so the
+        // repeat callbacks the driver fires before the closer runs don't
+        // re-queue the same handle.
+        if (self->device_) {
+            ESP_LOGW(TAG, "UAC device disconnected");
+            self->pending_close_ = handle;
+            self->device_ = nullptr;
+            if (self->close_pending_sem_) xSemaphoreGive(self->close_pending_sem_);
+        }
         break;
     default:
         break;
@@ -249,10 +298,13 @@ esp_err_t UAC::setMute(bool mute) {
 }
 
 void UAC::close() {
+    // If a disconnect hasn't fired yet (proactive close), hand the device
+    // off to the closer task so uac_host_device_close runs out of any
+    // potentially-locked context.
     if (device_) {
-        uac_host_device_stop(device_);
-        uac_host_device_close(device_);
+        pending_close_ = device_;
         device_ = nullptr;
+        if (close_pending_sem_) xSemaphoreGive(close_pending_sem_);
     }
     if (consumer_task_) {
         vTaskDelete(consumer_task_);
@@ -266,6 +318,10 @@ void UAC::close() {
         heap_caps_free(rx_buf_);
         rx_buf_ = nullptr;
     }
+    // Reset the "RX-capable device detected" latch so a subsequent openRx()
+    // properly blocks for a new enumeration after reconnect.
+    rx_detected_ = false;
+    if (rx_detected_sem_) xSemaphoreTake(rx_detected_sem_, 0);
 }
 
 }

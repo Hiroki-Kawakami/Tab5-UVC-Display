@@ -37,6 +37,13 @@ usb_host::UAC uac;
 jpeg_ppa::Pipeline *pipeline;
 QueueHandle_t frame_queue;
 
+// Mirrors PreviewScreen::connected_ so the renderer task (in this namespace)
+// can pick the right no-frame behaviour without poking the screen instance.
+volatile bool uvc_streaming = false;
+// Signaled from PreviewScreen::onEvent when UVC_HOST_DEVICE_DISCONNECTED
+// arrives; the supervisor task takes it to close the stream and re-open.
+SemaphoreHandle_t uvc_reopen_sem = nullptr;
+
 NVS settings_nvs("preview");
 constexpr const char *NVS_KEY_VOLUME     = "vol";
 constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
@@ -57,6 +64,12 @@ void renderer_task(void *) {
     int fb_index = 0;
     int frame_count = 0;
     int64_t fps_start = esp_timer_get_time();
+    // Counts down full-screen black flushes we still owe after the screen
+    // transitions to "nothing to show" (no UVC + no GUI). Three drains all
+    // triple-buffer slots, after which we stay idle until something needs
+    // refreshing again.
+    int dirty_fbs = 0;
+    bool was_showing = true;  // gui_visible starts true
     while (true) {
         const uvc_host_frame_t *frame;
         // Short timeout so the GUI can still refresh (slider feedback,
@@ -67,6 +80,12 @@ void renderer_task(void *) {
         // would leave a partially-painted fb (clipped UVC + skipped overlay
         // or full UVC + skipping the LVGL overwrite).
         bool gui_v = gui_is_visible();
+
+        // Edge-detect the transition into "blank screen" so we know how
+        // many slots still hold stale frames that need clearing.
+        bool now_showing = uvc_streaming || gui_v;
+        if (was_showing && !now_showing) dirty_fbs = 3;
+        was_showing = now_showing;
 
         int next = (fb_index + 1) % 3;
         void *out_fb = pf_port::display_get_frame_buffer(next);
@@ -86,6 +105,7 @@ void renderer_task(void *) {
             } else {
                 ESP_LOGW(TAG, "pipeline err=%s", esp_err_to_name(err));
             }
+            dirty_fbs = 0;
 
             frame_count++;
             int64_t now = esp_timer_get_time();
@@ -97,14 +117,28 @@ void renderer_task(void *) {
         } else if (gui_v) {
             // No UVC frame within the timeout. Compose LVGL on the next fb
             // so slider drags and status changes stay responsive without a
-            // camera. Carry the previous fb's UVC band forward so we don't
-            // expose whatever this slot held three cycles ago.
-            void *cur_fb = pf_port::display_get_frame_buffer(fb_index);
+            // camera. When streaming, carry the previous fb's UVC band
+            // forward (covers brief stalls). When disconnected, zero the
+            // UVC band so the last frozen frame doesn't stay on screen.
             size_t uvc_off  = (size_t)GUI_PANEL_H * DISP_W * 3;
             size_t uvc_size = (size_t)(DISP_H - GUI_PANEL_H) * DISP_W * 3;
-            memcpy((uint8_t*)out_fb + uvc_off, (uint8_t*)cur_fb + uvc_off, uvc_size);
+            if (uvc_streaming) {
+                void *cur_fb = pf_port::display_get_frame_buffer(fb_index);
+                memcpy((uint8_t*)out_fb + uvc_off, (uint8_t*)cur_fb + uvc_off, uvc_size);
+            } else {
+                memset((uint8_t*)out_fb + uvc_off, 0, uvc_size);
+            }
             gui_compose(out_fb);
             flush_next = true;
+            // gui_compose painted the GUI band and we just refreshed the
+            // UVC band, so the slot is no longer "stale".
+            if (dirty_fbs > 0) dirty_fbs--;
+        } else if (dirty_fbs > 0) {
+            // No UVC, no GUI — drain stale frames so the screen actually
+            // goes black instead of holding the last UVC frame frozen.
+            memset(out_fb, 0, (size_t)DISP_W * DISP_H * 3);
+            flush_next = true;
+            dirty_fbs--;
         }
 
         if (flush_next) {
@@ -206,31 +240,42 @@ void PreviewScreen::onEnter() {
     ESP_ERROR_CHECK(pipeline->init(pcfg));
 
     frame_queue = xQueueCreate(1, sizeof(uvc_host_frame_t*));
+    uvc_reopen_sem = xSemaphoreCreateBinary();
     xTaskCreatePinnedToCore(renderer_task, "renderer", 4096, nullptr, 16, nullptr, 0);
 
+    // Supervisor: opens the UVC stream, sets up UAC, waits for disconnect,
+    // tears both down, and loops forever so the device can be unplugged and
+    // re-plugged at runtime.
     xTaskCreatePinnedToCore([](void*){
-        while (uvc.open(STREAM_W, STREAM_H, 50) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-        uvc.start();
-
-        // After UVC enumerated, give the UAC driver a moment to enumerate and
-        // open the RX side (USB capture audio → ES8388 speaker).
-        if (uac.openRx(16 * 1024, 4096, 5000) == ESP_OK) {
-            uac_host_dev_info_t info = {};
-            uint32_t rate = 48000;
-            uint8_t  ch   = 2;
-            uint8_t  bps  = 16;
-            if (uac.getDeviceInfo(&info) == ESP_OK) {
-                ESP_LOGI(TAG, "UAC dev VID=0x%04x PID=0x%04x", info.VID, info.PID);
-                if (info.VID == 0x534d && info.PID == 0x2109) {  // MS2109 HDMI→USB
-                    rate = 96000; ch = 1; bps = 16;
-                }
+        while (true) {
+            while (uvc.open(STREAM_W, STREAM_H, 50) != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
             }
-            uac.start(rate, ch, bps);
+            uvc.start();
+
+            // After UVC enumerated, give the UAC driver a moment to enumerate
+            // and open the RX side (USB capture audio → ES8388 speaker).
+            if (uac.openRx(16 * 1024, 4096, 5000) == ESP_OK) {
+                uac_host_dev_info_t info = {};
+                uint32_t rate = 48000;
+                uint8_t  ch   = 2;
+                uint8_t  bps  = 16;
+                if (uac.getDeviceInfo(&info) == ESP_OK) {
+                    ESP_LOGI(TAG, "UAC dev VID=0x%04x PID=0x%04x", info.VID, info.PID);
+                    if (info.VID == 0x534d && info.PID == 0x2109) {  // MS2109 HDMI→USB
+                        rate = 96000; ch = 1; bps = 16;
+                    }
+                }
+                uac.start(rate, ch, bps);
+            }
+
+            // Block until UVC_HOST_DEVICE_DISCONNECTED gets posted to the sem.
+            xSemaphoreTake(uvc_reopen_sem, portMAX_DELAY);
+            ESP_LOGI(TAG, "UVC disconnected, tearing down for reopen");
+            uac.close();
+            uvc.close();
         }
-        vTaskDelete(NULL);
-    }, "uvc_open", 4096, nullptr, 5, nullptr, 0);
+    }, "uvc_supervisor", 4096, nullptr, 5, nullptr, 0);
 }
 
 void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
@@ -240,13 +285,16 @@ void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
 void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {
     if (event->type == UVC_HOST_DEVICE_DISCONNECTED && connected_) {
         connected_ = false;
+        uvc_streaming = false;
         lv_async_call([this](){ set_status_ui(false); });
+        if (uvc_reopen_sem) xSemaphoreGive(uvc_reopen_sem);
     }
 }
 
 bool PreviewScreen::onFrame(const uvc_host_frame_t *frame) {
     if (!connected_) {
         connected_ = true;
+        uvc_streaming = true;
         lv_async_call([this](){ set_status_ui(true); });
     }
     if (xQueueSend(frame_queue, &frame, 0) != pdTRUE) {

@@ -27,6 +27,7 @@ public:
     void install();
     esp_err_t open(int width, int height, float frame_rate);
     void start();
+    void close();
     void returnFrame(const uvc_host_frame_t *frame);
     void setCallback(Callback *callback) { callback_ = callback; }
 
@@ -85,6 +86,17 @@ private:
     uint8_t rx_addr_{0};
     uint8_t rx_iface_{0};
     bool    rx_detected_{false};
+
+    // The IDF UAC driver requires the user to call uac_host_device_close()
+    // to ack a DISCONNECT event before its internal disconnect loop will
+    // terminate, but calling it directly from the callback corrupts the
+    // interface lock in our environment. We hand the handle off to a
+    // separate task whose priority is higher than the UAC driver's so it
+    // preempts and acks promptly.
+    static void closerTaskFn(void *arg);
+    SemaphoreHandle_t close_pending_sem_{nullptr};
+    uac_host_device_handle_t pending_close_{nullptr};
+    TaskHandle_t closer_task_{nullptr};
 };
 
 }
