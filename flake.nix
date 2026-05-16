@@ -30,15 +30,9 @@
           inputsFrom = [ esp-idf ];
           packages = [
             esp-idf
-            pkgs.gcc
-            pkgs.ccache
-            pkgs.SDL2
-            pkgs.libjpeg
-            pkgs.pkg-config
           ];
           shellHook = ''
             export ESP_IDF_VERSION="5.4"
-            export HOST_GCC="${pkgs.gcc}"
           '';
         };
       }

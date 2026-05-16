@@ -6,8 +6,6 @@
           "--header-insertion=never",
           "--clang-tidy",
           "--enable-config",
-          // "--query-driver=/nix/store/fi6swqk4m4md2hdfywi7lls0wxbbz08p-gcc-wrapper-14.3.0/bin/*",
-          // "--compile-commands-dir=build",
           "--query-driver=/nix/store/rwcpgjaxmg0r6vl2caq2d7wi5svangcy-riscv32-esp-elf-esp-idf-v5.4.3/bin/riscv32-esp-elf-*",
           "--compile-commands-dir=esp32p4/build",
         ],
