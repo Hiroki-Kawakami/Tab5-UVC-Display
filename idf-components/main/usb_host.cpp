@@ -141,11 +141,40 @@ void UAC::handleRxDone() {
     uint32_t bytes_read = 0;
     esp_err_t err = uac_host_device_read(device_, rx_buf_, rx_buf_size_, &bytes_read, 0);
     if (err != ESP_OK || bytes_read == 0) return;
-    if (callback_) callback_->onRxData(rx_buf_, bytes_read);
+    if (!tx_buf_) return;
+
+    // Non-blocking push. If the consumer can't keep up (codec writes blocking on
+    // I2S DMA), drop the tail of this chunk instead of stalling the UAC driver
+    // task — back-pressure into UAC's internal ring would cause sample loss
+    // anyway, and a brief audible glitch beats accumulating drift.
+    size_t free = xStreamBufferSpacesAvailable(tx_buf_);
+    size_t to_send = bytes_read < free ? bytes_read : free;
+    if (to_send > 0) {
+        xStreamBufferSend(tx_buf_, rx_buf_, to_send, 0);
+    }
+}
+
+void UAC::consumerTaskFn(void *arg) {
+    auto self = static_cast<UAC*>(arg);
+    constexpr size_t CHUNK = 4096;
+    uint8_t *chunk = static_cast<uint8_t*>(heap_caps_malloc(CHUNK,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
+    if (!chunk) {
+        ESP_LOGE(TAG, "UAC consumer: chunk alloc failed");
+        vTaskDelete(nullptr);
+        return;
+    }
+    while (true) {
+        size_t got = xStreamBufferReceive(self->tx_buf_, chunk, CHUNK, portMAX_DELAY);
+        if (got > 0 && self->callback_) {
+            self->callback_->onRxData(chunk, got);
+        }
+    }
 }
 
 esp_err_t UAC::openRx(uint32_t buffer_size, uint32_t buffer_threshold,
-                     uint32_t timeout_ms) {
+                     uint32_t timeout_ms, size_t stream_buf_size,
+                     size_t consumer_task_priority, int consumer_task_core_id) {
     if (device_) return ESP_ERR_INVALID_STATE;
     if (xSemaphoreTake(rx_detected_sem_, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         ESP_LOGW(TAG, "No UAC RX device detected within %lums", (unsigned long)timeout_ms);
@@ -154,6 +183,21 @@ esp_err_t UAC::openRx(uint32_t buffer_size, uint32_t buffer_threshold,
     rx_buf_size_ = buffer_size;
     rx_buf_ = static_cast<uint8_t*>(heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
     if (!rx_buf_) return ESP_ERR_NO_MEM;
+
+    tx_buf_ = xStreamBufferCreate(stream_buf_size, 1);
+    if (!tx_buf_) {
+        heap_caps_free(rx_buf_);
+        rx_buf_ = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreatePinnedToCore(&UAC::consumerTaskFn, "uac_play", 4096, this,
+                                consumer_task_priority, &consumer_task_,
+                                consumer_task_core_id) != pdPASS) {
+        vStreamBufferDelete(tx_buf_); tx_buf_ = nullptr;
+        heap_caps_free(rx_buf_);      rx_buf_ = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
 
     uac_host_device_config_t config = {};
     config.addr = rx_addr_;
@@ -165,8 +209,9 @@ esp_err_t UAC::openRx(uint32_t buffer_size, uint32_t buffer_threshold,
 
     esp_err_t err = uac_host_device_open(&config, &device_);
     if (err != ESP_OK) {
-        heap_caps_free(rx_buf_);
-        rx_buf_ = nullptr;
+        vTaskDelete(consumer_task_);  consumer_task_ = nullptr;
+        vStreamBufferDelete(tx_buf_); tx_buf_ = nullptr;
+        heap_caps_free(rx_buf_);      rx_buf_ = nullptr;
         ESP_LOGE(TAG, "uac_host_device_open failed: %s", esp_err_to_name(err));
         return err;
     }
@@ -208,6 +253,14 @@ void UAC::close() {
         uac_host_device_stop(device_);
         uac_host_device_close(device_);
         device_ = nullptr;
+    }
+    if (consumer_task_) {
+        vTaskDelete(consumer_task_);
+        consumer_task_ = nullptr;
+    }
+    if (tx_buf_) {
+        vStreamBufferDelete(tx_buf_);
+        tx_buf_ = nullptr;
     }
     if (rx_buf_) {
         heap_caps_free(rx_buf_);

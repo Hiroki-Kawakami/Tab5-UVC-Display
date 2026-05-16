@@ -3,6 +3,8 @@
 #include <cstddef>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
 #include "usb/usb_host.h"
 #include "usb/uvc_host.h"
 #include "usb/uac_host.h"
@@ -44,9 +46,14 @@ public:
     void install(size_t stack_size = 4 * 1024, size_t priority = 5, int core_id = 0);
 
     /*!< Wait up to timeout_ms for an RX-capable UAC interface to be enumerated,
-     *   then open it. Allocates the internal RX buffer (buffer_size bytes). */
+     *   then open it. Allocates the internal RX buffer (buffer_size bytes).
+     *   stream_buf_size: SPSC buffer between RX_DONE and the consumer task,
+     *   absorbs jitter so I2S blocking does not back up the UAC driver. */
     esp_err_t openRx(uint32_t buffer_size, uint32_t buffer_threshold,
-                     uint32_t timeout_ms = 5000);
+                     uint32_t timeout_ms = 5000,
+                     size_t stream_buf_size = 32 * 1024,
+                     size_t consumer_task_priority = 10,
+                     int consumer_task_core_id = 1);
 
     esp_err_t getDeviceInfo(uac_host_dev_info_t *info);
     esp_err_t start(uint32_t sample_rate, uint8_t channels, uint8_t bit_resolution);
@@ -61,12 +68,17 @@ private:
                               uac_host_driver_event_t event, void *arg);
     static void deviceEventCb(uac_host_device_handle_t handle,
                               uac_host_device_event_t event, void *arg);
+    static void consumerTaskFn(void *arg);
     void handleRxDone();
 
     Callback *callback_{nullptr};
     uac_host_device_handle_t device_{nullptr};
     uint8_t *rx_buf_{nullptr};
     size_t   rx_buf_size_{0};
+
+    // Decouple RX_DONE (UAC driver task) from the codec write (consumer task)
+    StreamBufferHandle_t tx_buf_{nullptr};
+    TaskHandle_t consumer_task_{nullptr};
 
     // Detection synchronization
     SemaphoreHandle_t rx_detected_sem_{nullptr};
