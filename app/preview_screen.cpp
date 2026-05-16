@@ -248,7 +248,7 @@ void PreviewScreen::onEnter() {
     // re-plugged at runtime.
     xTaskCreatePinnedToCore([](void*){
         while (true) {
-            while (uvc.open(STREAM_W, STREAM_H, 50) != ESP_OK) {
+            while (uvc.open(STREAM_W, STREAM_H, 30) != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             uvc.start();
