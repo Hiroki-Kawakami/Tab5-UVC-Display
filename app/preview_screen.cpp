@@ -9,6 +9,7 @@
 #include "bsp_tab5.h"
 #include "uvc_display.hpp"
 #include <cassert>
+#include <cstring>
 
 static const char *TAG = "preview";
 
@@ -41,35 +42,57 @@ void renderer_task(void *) {
     int64_t fps_start = esp_timer_get_time();
     while (true) {
         const uvc_host_frame_t *frame;
-        if (xQueueReceive(frame_queue, &frame, portMAX_DELAY) != pdTRUE) continue;
-
-        int next = (fb_index + 1) % 3;
-        void *out_fb = pf_port::display_get_frame_buffer(next);
+        // Short timeout so the GUI can still refresh (slider feedback,
+        // connection status) when no UVC frame is arriving — e.g. before
+        // the camera connects or during a stall.
+        bool got_frame = xQueueReceive(frame_queue, &frame, pdMS_TO_TICKS(33)) == pdTRUE;
         // Snapshot GUI visibility for the whole frame: a flip mid-render
         // would leave a partially-painted fb (clipped UVC + skipped overlay
         // or full UVC + skipping the LVGL overwrite).
         bool gui_v = gui_is_visible();
-        jpeg_ppa::RenderOpts opts;
-        if (gui_v) {
-            opts.out_y_start = GUI_PANEL_H;
-            opts.out_y_end   = DISP_H;
-        }
-        esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb, opts);
-        uvc.returnFrame(frame);
-        if (err == ESP_OK) {
-            if (gui_v) gui_compose(out_fb);
-            pf_port::display_flush(next);
-            fb_index = next;
-        } else {
-            ESP_LOGW(TAG, "pipeline err=%s", esp_err_to_name(err));
+
+        int next = (fb_index + 1) % 3;
+        void *out_fb = pf_port::display_get_frame_buffer(next);
+        bool flush_next = false;
+
+        if (got_frame) {
+            jpeg_ppa::RenderOpts opts;
+            if (gui_v) {
+                opts.out_y_start = GUI_PANEL_H;
+                opts.out_y_end   = DISP_H;
+            }
+            esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb, opts);
+            uvc.returnFrame(frame);
+            if (err == ESP_OK) {
+                if (gui_v) gui_compose(out_fb);
+                flush_next = true;
+            } else {
+                ESP_LOGW(TAG, "pipeline err=%s", esp_err_to_name(err));
+            }
+
+            frame_count++;
+            int64_t now = esp_timer_get_time();
+            if (now - fps_start >= 1000000) {
+                ESP_LOGI(TAG, "%dfps", frame_count);
+                frame_count = 0;
+                fps_start = now;
+            }
+        } else if (gui_v) {
+            // No UVC frame within the timeout. Compose LVGL on the next fb
+            // so slider drags and status changes stay responsive without a
+            // camera. Carry the previous fb's UVC band forward so we don't
+            // expose whatever this slot held three cycles ago.
+            void *cur_fb = pf_port::display_get_frame_buffer(fb_index);
+            size_t uvc_off  = (size_t)GUI_PANEL_H * DISP_W * 3;
+            size_t uvc_size = (size_t)(DISP_H - GUI_PANEL_H) * DISP_W * 3;
+            memcpy((uint8_t*)out_fb + uvc_off, (uint8_t*)cur_fb + uvc_off, uvc_size);
+            gui_compose(out_fb);
+            flush_next = true;
         }
 
-        frame_count++;
-        int64_t now = esp_timer_get_time();
-        if (now - fps_start >= 1000000) {
-            ESP_LOGI(TAG, "%dfps", frame_count);
-            frame_count = 0;
-            fps_start = now;
+        if (flush_next) {
+            pf_port::display_flush(next);
+            fb_index = next;
         }
     }
 }
