@@ -15,3 +15,4 @@ void uvc_display_app();
 // gui_is_visible()). The LVGL mutex is held during PPA to keep gui_fb stable.
 void gui_compose(void *out_fb);
 bool gui_is_visible();
+void gui_set_visible(bool visible);

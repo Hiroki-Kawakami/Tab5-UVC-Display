@@ -286,6 +286,9 @@ void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {
     if (event->type == UVC_HOST_DEVICE_DISCONNECTED && connected_) {
         connected_ = false;
         uvc_streaming = false;
+        // Auto-show the GUI so the user sees "Disconnected" + controls
+        // without needing to tap blindly on the (now blank) screen.
+        gui_set_visible(true);
         lv_async_call([this](){ set_status_ui(false); });
         if (uvc_reopen_sem) xSemaphoreGive(uvc_reopen_sem);
     }
@@ -295,6 +298,10 @@ bool PreviewScreen::onFrame(const uvc_host_frame_t *frame) {
     if (!connected_) {
         connected_ = true;
         uvc_streaming = true;
+        // The camera just started streaming — auto-hide the overlay so the
+        // user gets the full video frame. They can still tap to bring the
+        // controls back up.
+        gui_set_visible(false);
         lv_async_call([this](){ set_status_ui(true); });
     }
     if (xQueueSend(frame_queue, &frame, 0) != pdTRUE) {

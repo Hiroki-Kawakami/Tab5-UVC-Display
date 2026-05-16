@@ -20,6 +20,10 @@ bool gui_is_visible() {
     return gui_visible;
 }
 
+void gui_set_visible(bool visible) {
+    gui_visible = visible;
+}
+
 void gui_compose(void *out_fb) {
     // Hold the LVGL mutex so the lvgl_port task can't render into gui_fb
     // mid-PPA. PPA itself is blocking so the lock is released as soon as
