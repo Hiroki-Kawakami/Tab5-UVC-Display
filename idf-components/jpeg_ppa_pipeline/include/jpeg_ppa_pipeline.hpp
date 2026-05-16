@@ -42,6 +42,17 @@ struct Config {
     jpeg_yuv_rgb_conv_std_t yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 };
 
+/// Per-call options for Pipeline::process(). Default-constructed renders the
+/// full output picture.
+struct RenderOpts {
+    // Restrict rendering to the output's vertical band [out_y_start, out_y_end).
+    // Pixels outside the band are left untouched (caller's responsibility to
+    // overlay or repaint them). Only honored for rotation=ANGLE_90 with
+    // scale_x=1; ignored otherwise. out_y_end<=out_y_start disables clipping.
+    uint32_t out_y_start = 0;
+    uint32_t out_y_end   = 0;
+};
+
 class Pipeline {
 public:
     Pipeline();
@@ -56,7 +67,8 @@ public:
 
     /// Decode a JPEG and render it to `output_fb`. Blocks until the entire
     /// frame has been pushed through PPA SRM to the frame buffer.
-    esp_err_t process(const void *jpeg_data, size_t jpeg_size, void *output_fb);
+    esp_err_t process(const void *jpeg_data, size_t jpeg_size, void *output_fb,
+                      const RenderOpts &opts = {});
 
 private:
     struct Impl;

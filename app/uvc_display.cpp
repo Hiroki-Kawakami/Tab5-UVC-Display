@@ -7,8 +7,9 @@
 #define GUI_WIDTH        320
 #define GUI_HEIGHT       480
 #define GUI_SCALE        1.5f
-#define GUI_PANEL_W      720   // GUI_HEIGHT * GUI_SCALE
-#define GUI_PANEL_H      480   // GUI_WIDTH  * GUI_SCALE
+
+static_assert(GUI_HEIGHT * GUI_SCALE == GUI_PANEL_W, "GUI_PANEL_W mismatch");
+static_assert(GUI_WIDTH  * GUI_SCALE == GUI_PANEL_H, "GUI_PANEL_H mismatch");
 
 static uint16_t *gui_fb;
 static pf_port::SRMClient *gui_srm;
@@ -19,7 +20,6 @@ bool gui_is_visible() {
 }
 
 void gui_compose(void *out_fb) {
-    if (!gui_visible) return;
     // Hold the LVGL mutex so the lvgl_port task can't render into gui_fb
     // mid-PPA. PPA itself is blocking so the lock is released as soon as
     // the strip is fully consumed.

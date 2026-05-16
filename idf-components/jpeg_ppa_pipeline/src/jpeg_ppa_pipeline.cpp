@@ -60,6 +60,7 @@ struct Pipeline::Impl {
 
     // updated per process()
     void *current_output_fb = nullptr;
+    RenderOpts current_opts{};
     volatile uint32_t pending_strips = 0;
     volatile bool worker_should_exit = false;
 
@@ -132,6 +133,23 @@ esp_err_t Pipeline::Impl::set_up_ppa_op(uint32_t strip_idx, ppa_srm_oper_config_
     default:
         return ESP_ERR_INVALID_ARG;
     }
+
+    // Apply runtime output-y clip if requested. ANGLE_90 + scale_x==1 maps
+    // panel_y = pic_w - 1 - camera_x within each strip (the strip placement
+    // implies PPA's ANGLE_90 behaves as CCW: camera top-left lands at panel
+    // bottom-left, etc.). To skip panel_y ∈ [0, out_y_start) ∪ [out_y_end,
+    // pic_w) without shifting the rendered content, trim the camera-x range
+    // to the columns whose panel_y stays inside [out_y_start, out_y_end).
+    //   panel_y = pic_w - 1 - cx  ⇒  cx ∈ [pic_w - out_y_end, pic_w - out_y_start)
+    // Output goes to panel_y starting at out_y_start; the mapping inside the
+    // clipped band is identical to the no-clip case.
+    if (current_opts.out_y_end > current_opts.out_y_start &&
+        cfg.rotation == PPA_SRM_ROTATION_ANGLE_90 && cfg.scale_x == 1.0f) {
+        op.in.block_offset_x   = cfg.pic_w - current_opts.out_y_end;
+        op.in.block_w          = current_opts.out_y_end - current_opts.out_y_start;
+        op.out.block_offset_y  = current_opts.out_y_start;
+    }
+
     op.rotation_angle = cfg.rotation;
     op.scale_x = cfg.scale_x;
     op.scale_y = cfg.scale_y;
@@ -282,10 +300,12 @@ esp_err_t Pipeline::deinit()
     return ESP_OK;
 }
 
-esp_err_t Pipeline::process(const void *jpeg_data, size_t jpeg_size, void *output_fb)
+esp_err_t Pipeline::process(const void *jpeg_data, size_t jpeg_size, void *output_fb,
+                            const RenderOpts &opts)
 {
     if (!impl_->decoder || !output_fb) return ESP_ERR_INVALID_STATE;
     impl_->current_output_fb = output_fb;
+    impl_->current_opts = opts;
     impl_->pending_strips = impl_->strip_count;
     // Drain stale completion (defensive; should always be 0)
     xSemaphoreTake(impl_->all_done, 0);

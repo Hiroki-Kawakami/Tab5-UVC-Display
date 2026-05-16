@@ -46,10 +46,19 @@ void renderer_task(void *) {
 
         int next = (fb_index + 1) % 3;
         void *out_fb = pf_port::display_get_frame_buffer(next);
-        esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb);
+        // Snapshot GUI visibility for the whole frame: a flip mid-render
+        // would leave a partially-painted fb (clipped UVC + skipped overlay
+        // or full UVC + skipping the LVGL overwrite).
+        bool gui_v = gui_is_visible();
+        jpeg_ppa::RenderOpts opts;
+        if (gui_v) {
+            opts.out_y_start = GUI_PANEL_H;
+            opts.out_y_end   = DISP_H;
+        }
+        esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb, opts);
         uvc.returnFrame(frame);
         if (err == ESP_OK) {
-            gui_compose(out_fb);
+            if (gui_v) gui_compose(out_fb);
             pf_port::display_flush(next);
             fb_index = next;
         } else {
