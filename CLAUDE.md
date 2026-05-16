@@ -160,6 +160,84 @@ If output looks mirrored, swap the 90/270 formulas.
   not directly usable — JPEG hardware can't transcode 422→420. Use RGB565
   or RGB888 intermediate instead.
 
+## Audio (ES8388 speaker + UAC RX)
+
+Tab5 has an ES8388 codec driving the on-board speaker. The
+`idf-components/m5tab5-bsp/devices/es8388/` wrapper sets up
+`I2S0 std mode TX` (mclk=30, bclk=27, ws=29, dout=26, din=28, 48kHz/16bit
+stereo by default) plus `esp_codec_dev` in DAC mode. `PI4IOE1.SPK_EN`
+(bit 1) is already initialised to `true` in `bsp_tab5_init`, so the speaker
+amp is on at boot. `bsp_tab5_audio_{open,close,reconfig,write,set_volume,
+set_mute}` are the public API; the codec starts muted (volume=0). Only the
+TX path is wired up — RX TDM (mic capture) can be added later if needed.
+
+UAC audio output flow:
+
+```
+USB UVC camera ── (uac_host_device driver) ──┐
+                                              ▼
+                          RX_DONE event (UAC driver task, prio 5)
+                                              │
+                                       uac_host_device_read
+                                              │
+                                              ▼
+                            32 KiB SPSC StreamBuffer (PSRAM)
+                                              │  (xStreamBufferSend, timeout=0)
+                                              ▼
+                            uac_play consumer task (core 1, prio 10)
+                                              │  4 KiB chunks
+                                              ▼
+                       bsp_tab5_audio_write → esp_codec_dev_write
+                                              │
+                                              ▼
+                                         I2S TX DMA → ES8388 → speaker
+```
+
+Key implementation decisions:
+
+1. **Decouple RX_DONE from the codec write via a StreamBuffer + dedicated
+   consumer task.** If `esp_codec_dev_write` blocks on I2S DMA inside the
+   RX_DONE callback, the UAC driver task can't service the next RX_DONE
+   and the UAC ring buffer overruns — audible as periodic dropouts. Splitting
+   the two means I2S blocking only stalls the consumer, never the UAC
+   driver task.
+2. **Non-blocking push, drop on overflow.** `xStreamBufferSend` uses
+   `timeout=0`; if the buffer is full we drop the tail of the current chunk.
+   Back-pressuring into UAC's internal ring would lose samples *anyway* and
+   accumulate drift, so a brief audible glitch is preferable.
+3. **Consumer pinned to core 1, priority 10.** UVC frame callbacks +
+   JPEG/PPA renderer are on core 0; keeping audio on core 1 avoids
+   contention with the 30fps render loop. Priority 10 > UAC driver (5) so
+   the buffer drains promptly once data lands, but < renderer (16) so we
+   never starve video.
+
+UAC device detection is driven by the `uac_host` driver callback in
+`usb_host::UAC::driverEventCb`; the first `RX_CONNECTED` interface latches
+its `(addr, iface_num)` and gives a semaphore. `openRx()` blocks on that
+semaphore with a timeout, then allocates the PSRAM RX buffer + stream
+buffer + consumer task before calling `uac_host_device_open`.
+
+### MS2109 quirk (HDMI→USB capture, VID=0x534D PID=0x2109)
+
+The device **descriptor-advertises 96 kHz mono 16-bit but actually streams
+48 kHz stereo 16-bit on the wire** — same byte rate, mis-labelled format.
+`PreviewScreen::onEnter` calls `uac_host_device_start(96000, 1, 16)`
+(matching the lie in the descriptor) while leaving ES8388 open at
+48000/2/16 (matching the real wire format). The bytes line up and stereo
+plays correctly. **Do NOT** "fix" this by reconfiguring ES8388 to
+96k/mono — that would honour the false descriptor and break playback.
+Preserve the asymmetric configuration for any device matching that VID/PID.
+
+### Clock-domain drift (unfinished)
+
+USB SOF (UAC supply rate) and ES8388 I2S MCLK are independent clock
+domains — the 32 KiB stream buffer absorbs short-term jitter but does NOT
+correct long-term drift (typically a few hundred ppm). Symptoms on
+multi-minute streams: buffer either fills (→ tail-drop glitches) or
+empties (→ DMA underrun, `auto_clear_after_cb=true` keeps it silent).
+Real async-UAC sync would need software resampling driven by buffer-level
+feedback or MCLK fine-adjust; neither is implemented yet.
+
 ## Things to check before changing the pipeline
 
 - `Pipeline::Config::yuv_rgb_conv_std` chooses BT601 vs BT709 for the
