@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "jpeg_ppa_pipeline.hpp"
 #include "bsp_tab5.h"
+#include "uvc_display.hpp"
 #include <cassert>
 
 static const char *TAG = "preview";
@@ -48,6 +49,7 @@ void renderer_task(void *) {
         esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb);
         uvc.returnFrame(frame);
         if (err == ESP_OK) {
+            gui_compose(out_fb);
             pf_port::display_flush(next);
             fb_index = next;
         } else {
