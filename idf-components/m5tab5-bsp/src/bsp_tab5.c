@@ -15,6 +15,7 @@
 #include "gt911/gt911.h"
 #include "st7123/st7123_lcd.h"
 #include "st7123/st7123_touch.h"
+#include "es8388/es8388.h"
 #include "nvs_flash.h"
 #include "esp_hosted.h"
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
@@ -35,6 +36,7 @@ static ili9881c_lcd_t ili9881c;
 static gt911_touch_t gt911;
 static st7123_lcd_t st7123_lcd;
 static st7123_touch_t st7123_touch;
+static es8388_t es8388;
 
 esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     esp_err_t err;
@@ -132,6 +134,26 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
         return ESP_ERR_NOT_FOUND;
     }
 
+    // ES8388 audio codec (speaker output)
+    if (!config->audio.disable) {
+        err = es8388_init(&(es8388_config_t){
+            .i2c_bus         = i2c0,
+            .i2s_port        = I2S_NUM_0,
+            .mclk_gpio       = GPIO_NUM_30,
+            .bclk_gpio       = GPIO_NUM_27,
+            .ws_gpio         = GPIO_NUM_29,
+            .dout_gpio       = GPIO_NUM_26,
+            .din_gpio        = GPIO_NUM_28,
+            .sample_rate     = config->audio.sample_rate,
+            .bits_per_sample = config->audio.bits_per_sample,
+            .channels        = config->audio.channels,
+        }, &es8388);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "ES8388 init failed: %d (continuing without audio)", err);
+            es8388 = NULL;
+        }
+    }
+
     if (config->wifi.mode || config->bluetooth.enable) {
         // NVS (for WiFi & Bluetooth)
         err = nvs_flash_init();
@@ -205,4 +227,33 @@ int bsp_tab5_touch_read(esp_lcd_touch_point_data_t *points, uint8_t max_points) 
 void bsp_tab5_touch_wait_interrupt(void) {
     if (gt911) gt911_touch_wait_interrupt(gt911);
     if (st7123_touch) st7123_touch_wait_interrupt(st7123_touch);
+}
+
+// MARK: Audio
+esp_err_t bsp_tab5_audio_open(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_open(es8388, sample_rate, bits_per_sample, channels);
+}
+esp_err_t bsp_tab5_audio_close(void) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_close(es8388);
+}
+esp_err_t bsp_tab5_audio_reconfig(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_reconfig_output(es8388, sample_rate, bits_per_sample, channels);
+}
+esp_err_t bsp_tab5_audio_write(const void *data, size_t len) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_write(es8388, data, len);
+}
+esp_err_t bsp_tab5_audio_set_volume(int volume) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_set_volume(es8388, volume);
+}
+esp_err_t bsp_tab5_audio_set_mute(bool mute) {
+    if (!es8388) return ESP_ERR_INVALID_STATE;
+    return es8388_set_mute(es8388, mute);
+}
+int bsp_tab5_audio_get_volume(void) {
+    return es8388 ? es8388_get_volume(es8388) : -1;
 }

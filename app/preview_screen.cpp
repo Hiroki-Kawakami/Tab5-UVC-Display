@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "jpeg_ppa_pipeline.hpp"
+#include "bsp_tab5.h"
 #include <cassert>
 
 static const char *TAG = "preview";
@@ -29,8 +30,10 @@ constexpr int STRIP_H = 16;
 constexpr int RING_COUNT = 5;
 
 usb_host::UVC uvc;
+usb_host::UAC uac;
 jpeg_ppa::Pipeline *pipeline;
 QueueHandle_t frame_queue;
+constexpr int AUDIO_VOLUME = 100;
 
 void renderer_task(void *) {
     int fb_index = 0;
@@ -70,6 +73,8 @@ void PreviewScreen::onEnter() {
     usb_host::install();
     uvc.install();
     uvc.setCallback(this);
+    uac.install();
+    uac.setCallback(this);
 
     jpeg_ppa::Config pcfg{};
     pcfg.pic_w = STREAM_W;
@@ -92,12 +97,34 @@ void PreviewScreen::onEnter() {
     xTaskCreatePinnedToCore(renderer_task, "renderer", 4096, nullptr, 16, nullptr, 0);
 
     xTaskCreatePinnedToCore([](void*){
-        while (uvc.open(STREAM_W, STREAM_H, 30) != ESP_OK) {
+        while (uvc.open(STREAM_W, STREAM_H, 50) != ESP_OK) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
         uvc.start();
+
+        // After UVC enumerated, give the UAC driver a moment to enumerate and
+        // open the RX side (USB capture audio → ES8388 speaker).
+        if (uac.openRx(16 * 1024, 4096, 5000) == ESP_OK) {
+            uac_host_dev_info_t info = {};
+            uint32_t rate = 48000;
+            uint8_t  ch   = 2;
+            uint8_t  bps  = 16;
+            if (uac.getDeviceInfo(&info) == ESP_OK) {
+                ESP_LOGI(TAG, "UAC dev VID=0x%04x PID=0x%04x", info.VID, info.PID);
+                if (info.VID == 0x534d && info.PID == 0x2109) {  // MS2109 HDMI→USB
+                    rate = 96000; ch = 1; bps = 16;
+                }
+            }
+            if (uac.start(rate, ch, bps) == ESP_OK) {
+                bsp_tab5_audio_set_volume(AUDIO_VOLUME);
+            }
+        }
         vTaskDelete(NULL);
     }, "uvc_open", 4096, nullptr, 5, nullptr, 0);
+}
+
+void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
+    bsp_tab5_audio_write(data, len);
 }
 
 void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {

@@ -28,6 +28,12 @@ typedef struct {
     struct {
         bool enable;
     } bluetooth;
+    struct {
+        bool disable;            /*!< Skip audio codec init (default: enabled) */
+        uint32_t sample_rate;    /*!< 0 -> 48000 */
+        uint8_t bits_per_sample; /*!< 0 -> 16 */
+        uint8_t channels;        /*!< 0 -> 2 */
+    } audio;
 } bsp_tab5_config_t;
 
 esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config);
@@ -36,6 +42,15 @@ void *bsp_tab5_display_get_frame_buffer(int fb_index);
 void bsp_tab5_display_flush(int fb_index);
 int bsp_tab5_touch_read(esp_lcd_touch_point_data_t *points, uint8_t max_points);
 void bsp_tab5_touch_wait_interrupt(void);
+
+// MARK: Audio (speaker output via ES8388)
+esp_err_t bsp_tab5_audio_open(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
+esp_err_t bsp_tab5_audio_close(void);
+esp_err_t bsp_tab5_audio_reconfig(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
+esp_err_t bsp_tab5_audio_write(const void *data, size_t len);
+esp_err_t bsp_tab5_audio_set_volume(int volume);   /*!< 0..100, 0 mutes */
+esp_err_t bsp_tab5_audio_set_mute(bool mute);
+int       bsp_tab5_audio_get_volume(void);
 
 #ifdef __cplusplus
 }
