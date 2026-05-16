@@ -92,7 +92,21 @@ static esp_err_t s_parse_jpeg(jpeg_decoder_handle_t engine, const uint8_t *in_bu
     jpeg_ll_set_picture_height(hal->dev, 0);
     jpeg_ll_set_picture_width(hal->dev, 0);
 
+    const uint8_t *buf_end = in_buf + inbuf_len;
     while (header_info->buffer_left) {
+        // Detect underflow / runaway: the IDF marker handlers advance
+        // buffer_offset by a length field read from the stream, then
+        // decrement buffer_left. A corrupt MJPEG (e.g. dropped USB isoc
+        // packet) can make that length huge, wrapping buffer_left around
+        // 0 and walking buffer_offset off the end of PSRAM. The invariants
+        // below hold for a clean parse; if either fails we've left the
+        // buffer and must bail before reading unmapped memory.
+        if (header_info->buffer_left > inbuf_len ||
+            header_info->buffer_offset < in_buf ||
+            header_info->buffer_offset >= buf_end) {
+            ESP_LOGW(TAG, "header parse out of bounds (corrupt JPEG)");
+            return ESP_ERR_INVALID_STATE;
+        }
         uint8_t lastchar = jpeg_get_bytes(header_info, 1);
         uint8_t thischar = jpeg_get_bytes(header_info, 1);
         uint16_t marker = (lastchar << 8 | thischar);

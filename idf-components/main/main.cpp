@@ -19,7 +19,7 @@ void init(int fb_num, PixelFormat pixel_format) {
     lvgl_port_cfg_t config = {
         .task_priority = 4,
         .task_stack = 7168,
-        .task_affinity = 0,
+        .task_affinity = 1,
         .task_max_sleep_ms = 500,
         .task_stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT,
         .timer_period_ms = 5,
