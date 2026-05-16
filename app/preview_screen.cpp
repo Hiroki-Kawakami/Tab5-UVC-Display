@@ -8,6 +8,7 @@
 #include "jpeg_ppa_pipeline.hpp"
 #include "bsp_tab5.h"
 #include "uvc_display.hpp"
+#include "nvs.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -35,6 +36,22 @@ usb_host::UVC uvc;
 usb_host::UAC uac;
 jpeg_ppa::Pipeline *pipeline;
 QueueHandle_t frame_queue;
+
+NVS settings_nvs("preview");
+constexpr const char *NVS_KEY_VOLUME     = "vol";
+constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
+
+uint8_t load_setting(const char *key, uint8_t fallback) {
+    uint8_t v = fallback;
+    if (settings_nvs.get(key, &v) != NVS::Error::OK) v = fallback;
+    return v;
+}
+
+void save_setting(const char *key, uint8_t value) {
+    if (settings_nvs.set(key, value) == NVS::Error::OK) {
+        settings_nvs.commit();
+    }
+}
 
 void renderer_task(void *) {
     int fb_index = 0;
@@ -131,10 +148,15 @@ void PreviewScreen::build() {
     volume_slider_ = lv_slider_create(root_);
     lv_obj_set_width(volume_slider_, LV_PCT(100));
     lv_slider_set_range(volume_slider_, 1, 100);
-    lv_slider_set_value(volume_slider_, 50, LV_ANIM_OFF);
+    lv_slider_set_value(volume_slider_, load_setting(NVS_KEY_VOLUME, 50), LV_ANIM_OFF);
     lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
         bsp_tab5_audio_set_volume(lv_slider_get_value(s));
+    });
+    // Persist only on release so we don't hammer NVS with every drag tick.
+    lv_obj_add_event_fn(volume_slider_, LV_EVENT_RELEASED, [](lv_event_t *e){
+        auto s = (lv_obj_t*)lv_event_get_target(e);
+        save_setting(NVS_KEY_VOLUME, (uint8_t)lv_slider_get_value(s));
     });
 
     auto br_lbl = lv_label_create(root_);
@@ -145,10 +167,14 @@ void PreviewScreen::build() {
     brightness_slider_ = lv_slider_create(root_);
     lv_obj_set_width(brightness_slider_, LV_PCT(100));
     lv_slider_set_range(brightness_slider_, 1, 100);
-    lv_slider_set_value(brightness_slider_, 50, LV_ANIM_OFF);
+    lv_slider_set_value(brightness_slider_, load_setting(NVS_KEY_BRIGHTNESS, 50), LV_ANIM_OFF);
     lv_obj_add_event_fn(brightness_slider_, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
         pf_port::display_set_brightness(lv_slider_get_value(s));
+    });
+    lv_obj_add_event_fn(brightness_slider_, LV_EVENT_RELEASED, [](lv_event_t *e){
+        auto s = (lv_obj_t*)lv_event_get_target(e);
+        save_setting(NVS_KEY_BRIGHTNESS, (uint8_t)lv_slider_get_value(s));
     });
 
     bsp_tab5_audio_set_volume(lv_slider_get_value(volume_slider_));
