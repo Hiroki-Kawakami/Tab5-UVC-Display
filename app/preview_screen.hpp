@@ -9,4 +9,13 @@ public:
     virtual void onEvent(const uvc_host_stream_event_data_t *event);
     virtual bool onFrame(const uvc_host_frame_t *frame);
     virtual void onRxData(const uint8_t *data, size_t len);
+
+private:
+    lv_obj_t *status_container_ = nullptr;
+    lv_obj_t *status_label_ = nullptr;
+    lv_obj_t *volume_slider_ = nullptr;
+    lv_obj_t *brightness_slider_ = nullptr;
+    volatile bool connected_ = false;
+
+    void set_status_ui(bool connected);
 };

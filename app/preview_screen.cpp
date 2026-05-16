@@ -34,7 +34,6 @@ usb_host::UVC uvc;
 usb_host::UAC uac;
 jpeg_ppa::Pipeline *pipeline;
 QueueHandle_t frame_queue;
-constexpr int AUDIO_VOLUME = 100;
 
 void renderer_task(void *) {
     int fb_index = 0;
@@ -77,7 +76,60 @@ void renderer_task(void *) {
 
 } // namespace
 
+void PreviewScreen::set_status_ui(bool connected) {
+    if (!status_container_ || !status_label_) return;
+    lv_obj_set_style_bg_color(status_container_, lv_color_hex(connected ? 0x0EBC00 : 0xC20000), 0);
+    lv_label_set_text(status_label_, connected ? "Connected" : "Disconnected");
+}
+
 void PreviewScreen::build() {
+    lv_obj_set_style_bg_color(root_, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(root_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(root_, 20, 0);
+
+    status_container_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(status_container_);
+    lv_obj_set_size(status_container_, LV_PCT(100), 100);
+    lv_obj_set_style_radius(status_container_, 15, 0);
+    lv_obj_set_style_bg_opa(status_container_, LV_OPA_COVER, 0);
+    status_label_ = lv_label_create(status_container_);
+    lv_obj_center(status_label_);
+    lv_obj_set_style_text_color(status_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_font(status_label_, &lv_font_montserrat_20, 0);
+    set_status_ui(false);
+
+    auto vol_lbl = lv_label_create(root_);
+    lv_label_set_text(vol_lbl, "Volume");
+    lv_obj_set_width(vol_lbl, LV_PCT(100));
+    lv_obj_set_style_margin_top(vol_lbl, 20, 0);
+
+    volume_slider_ = lv_slider_create(root_);
+    lv_obj_set_width(volume_slider_, LV_PCT(100));
+    lv_slider_set_range(volume_slider_, 1, 100);
+    lv_slider_set_value(volume_slider_, 50, LV_ANIM_OFF);
+    lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
+        auto s = (lv_obj_t*)lv_event_get_target(e);
+        bsp_tab5_audio_set_volume(lv_slider_get_value(s));
+    });
+
+    auto br_lbl = lv_label_create(root_);
+    lv_label_set_text(br_lbl, "Brightness");
+    lv_obj_set_width(br_lbl, LV_PCT(100));
+    lv_obj_set_style_margin_top(br_lbl, 20, 0);
+
+    brightness_slider_ = lv_slider_create(root_);
+    lv_obj_set_width(brightness_slider_, LV_PCT(100));
+    lv_slider_set_range(brightness_slider_, 1, 100);
+    lv_slider_set_value(brightness_slider_, 50, LV_ANIM_OFF);
+    lv_obj_add_event_fn(brightness_slider_, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
+        auto s = (lv_obj_t*)lv_event_get_target(e);
+        pf_port::display_set_brightness(lv_slider_get_value(s));
+    });
+
+    bsp_tab5_audio_set_volume(lv_slider_get_value(volume_slider_));
+    pf_port::display_set_brightness(lv_slider_get_value(brightness_slider_));
 }
 
 void PreviewScreen::onEnter() {
@@ -126,9 +178,7 @@ void PreviewScreen::onEnter() {
                     rate = 96000; ch = 1; bps = 16;
                 }
             }
-            if (uac.start(rate, ch, bps) == ESP_OK) {
-                bsp_tab5_audio_set_volume(AUDIO_VOLUME);
-            }
+            uac.start(rate, ch, bps);
         }
         vTaskDelete(NULL);
     }, "uvc_open", 4096, nullptr, 5, nullptr, 0);
@@ -139,9 +189,17 @@ void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
 }
 
 void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {
+    if (event->type == UVC_HOST_DEVICE_DISCONNECTED && connected_) {
+        connected_ = false;
+        lv_async_call([this](){ set_status_ui(false); });
+    }
 }
 
 bool PreviewScreen::onFrame(const uvc_host_frame_t *frame) {
+    if (!connected_) {
+        connected_ = true;
+        lv_async_call([this](){ set_status_ui(true); });
+    }
     if (xQueueSend(frame_queue, &frame, 0) != pdTRUE) {
         return true;
     }

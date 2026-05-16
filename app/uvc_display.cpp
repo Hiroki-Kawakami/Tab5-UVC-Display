@@ -75,11 +75,13 @@ static void lvgl_setup() {
         prev_pressed = pressed;
 
         if (pressed && !press_consumed && gui_visible && in_region) {
-            // PPA ANGLE_90 + GUI_SCALE maps LVGL (lx, ly) → panel
-            //   px = (GUI_HEIGHT - 1 - ly) * GUI_SCALE
-            //   py = lx * GUI_SCALE
-            int lx = (int)(py / GUI_SCALE);
-            int ly = (GUI_HEIGHT - 1) - (int)(px / GUI_SCALE);
+            // PPA ANGLE_90 is CCW per-block (camera/LVGL top-left lands at
+            // panel bottom-left, etc.). With GUI_SCALE applied:
+            //   px = ly * GUI_SCALE
+            //   py = (GUI_WIDTH - 1 - lx) * GUI_SCALE
+            // Inverse:
+            int ly = (int)(px / GUI_SCALE);
+            int lx = (GUI_WIDTH - 1) - (int)(py / GUI_SCALE);
             if (lx < 0) lx = 0;
             if (lx >= GUI_WIDTH) lx = GUI_WIDTH - 1;
             if (ly < 0) ly = 0;
@@ -99,5 +101,5 @@ void uvc_display_app() {
     lv_async_call([](){
         screen_manager.push(std::make_unique<PreviewScreen>());
     });
-    pf_port::display_set_brightness(80);
+    pf_port::display_set_brightness(50);
 }
