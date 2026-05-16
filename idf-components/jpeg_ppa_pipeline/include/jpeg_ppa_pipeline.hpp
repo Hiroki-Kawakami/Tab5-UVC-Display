@@ -4,6 +4,7 @@
 #include <cstddef>
 #include "esp_err.h"
 #include "driver/ppa.h"
+#include "driver/jpeg_decode.h"
 
 namespace jpeg_ppa {
 
@@ -34,6 +35,11 @@ struct Config {
     ppa_srm_rotation_angle_t rotation;              // PPA_SRM_ROTATION_ANGLE_{0,90,180,270}
     float scale_x;                                  // SRM scale factor X
     float scale_y;                                  // SRM scale factor Y
+
+    // YUV→RGB conversion standard applied by the JPEG hardware's 2D-DMA CSC
+    // when the input_color_mode is an RGB format. Defaults to BT601 (matches
+    // most webcam encoder output); use BT709 for HD/Rec.709 streams.
+    jpeg_yuv_rgb_conv_std_t yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 };
 
 class Pipeline {

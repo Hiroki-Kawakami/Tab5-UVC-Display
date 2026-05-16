@@ -241,7 +241,7 @@ esp_err_t Pipeline::init(const Config &cfg)
     jpeg_strip_decode_cfg_t dcfg{};
     dcfg.base_cfg.output_format = s_jpeg_out_for_ppa(cfg.input_color_mode);
     dcfg.base_cfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
-    dcfg.base_cfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
+    dcfg.base_cfg.conv_std = cfg.yuv_rgb_conv_std;
     dcfg.pic_w = cfg.pic_w;
     dcfg.pic_h = cfg.pic_h;
     dcfg.strip_h = cfg.strip_h;

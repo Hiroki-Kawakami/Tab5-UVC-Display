@@ -83,6 +83,7 @@ void PreviewScreen::onEnter() {
     pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
     pcfg.scale_x = 1.0f;
     pcfg.scale_y = 1.0f;
+    pcfg.yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 
     pipeline = new jpeg_ppa::Pipeline();
     ESP_ERROR_CHECK(pipeline->init(pcfg));
