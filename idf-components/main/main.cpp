@@ -16,6 +16,7 @@ void init(int fb_num, PixelFormat pixel_format) {
     bsp_config.usb.usb5v_en = true;
     bsp_config.audio.eq.enable     = true;
     bsp_config.audio.eq.max_stages = 8;
+    bsp_config.audio.speaker_mode = BSP_SPEAKER_MODE_AUTO;
     bsp_tab5_init(&bsp_config);
 
     // Speaker-out EQ for the 3.5mm jack. A swept-sine measurement showed the

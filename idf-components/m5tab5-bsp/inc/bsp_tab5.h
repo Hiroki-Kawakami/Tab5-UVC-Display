@@ -12,6 +12,12 @@
 extern "C" {
 #endif
 
+typedef enum {
+    BSP_SPEAKER_MODE_ON       = 0,  /*!< amp always on (default — matches zero-init) */
+    BSP_SPEAKER_MODE_AUTO     = 1,  /*!< amp on only while HP jack is unplugged */
+    BSP_SPEAKER_MODE_OFF      = 2,  /*!< amp always off */
+} bsp_speaker_mode_t;
+
 typedef struct {
     struct {
         uint8_t fb_num;
@@ -40,6 +46,7 @@ typedef struct {
             const audio_eq_biquad_t *biquads;     /*!< Initial coefficients (copied) */
             size_t max_stages;                    /*!< Capacity; 0 -> max(num_stages, 8) */
         } eq;
+        bsp_speaker_mode_t speaker_mode;          /*!< Speaker amp policy at boot */
     } audio;
 } bsp_tab5_config_t;
 
@@ -65,6 +72,17 @@ esp_err_t bsp_tab5_audio_eq_set_enabled(bool enabled);
 bool      bsp_tab5_audio_eq_is_enabled(void);
 esp_err_t bsp_tab5_audio_eq_set_biquads(const audio_eq_biquad_t *biquads, size_t num_stages);
 audio_eq_t bsp_tab5_audio_eq_handle(void);  /*!< NULL if EQ was not initialised */
+
+/* Speaker amp gate (PI4IOE1 pin 1) — read HP_DET via PI4IOE1 pin 7. */
+esp_err_t bsp_tab5_audio_set_speaker_mode(bsp_speaker_mode_t mode);
+bsp_speaker_mode_t bsp_tab5_audio_get_speaker_mode(void);
+bool      bsp_tab5_audio_headphone_inserted(void);
+
+/* Headphone insert/remove notification.
+ * Fires from the internal poller task whenever HP_DET changes (~200 ms granularity).
+ * Pass NULL to unregister. Only one callback at a time. */
+typedef void (*bsp_headphone_cb_t)(bool inserted, void *user);
+esp_err_t bsp_tab5_audio_set_headphone_callback(bsp_headphone_cb_t cb, void *user);
 
 #ifdef __cplusplus
 }

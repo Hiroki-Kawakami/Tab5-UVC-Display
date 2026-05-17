@@ -40,6 +40,77 @@ static st7123_touch_t st7123_touch;
 static es8388_t es8388;
 static audio_eq_t audio_eq;
 
+#define SPK_EN_PIN  1
+#define HP_DET_PIN  7
+static volatile bsp_speaker_mode_t s_speaker_mode = BSP_SPEAKER_MODE_ON;
+static TaskHandle_t s_speaker_task = NULL;
+static portMUX_TYPE s_hp_mux = portMUX_INITIALIZER_UNLOCKED;
+static bsp_headphone_cb_t s_hp_cb = NULL;
+static void *s_hp_cb_arg = NULL;
+static bool s_hp_last = false;
+static bool s_hp_last_valid = false;
+
+static bool hp_inserted_now(void) {
+    if (!pi4ioe1) return false;
+    bool hp = false;
+    /* HP_DET is pulled up externally; the jack's NC detect switch shorts the
+     * line to GND when no plug is inserted, so HP_DET=1 => headphones in. */
+    if (pi4io_get_input(pi4ioe1, HP_DET_PIN, &hp) != ESP_OK) return false;
+    return hp;
+}
+
+static void apply_speaker_pin_with_hp(bsp_speaker_mode_t mode, bool hp) {
+    if (!pi4ioe1) return;
+    bool desired;
+    switch (mode) {
+        case BSP_SPEAKER_MODE_ON:   desired = true; break;
+        case BSP_SPEAKER_MODE_AUTO: desired = !hp;  break;
+        case BSP_SPEAKER_MODE_OFF:
+        default:                    desired = false; break;
+    }
+    pi4io_set_output(pi4ioe1, SPK_EN_PIN, desired);
+}
+
+static void apply_speaker_pin(bsp_speaker_mode_t mode) {
+    apply_speaker_pin_with_hp(mode, hp_inserted_now());
+}
+
+static void speaker_task(void *arg) {
+    (void)arg;
+    while (1) {
+        bsp_speaker_mode_t mode = s_speaker_mode;
+        bool hp = hp_inserted_now();
+
+        /* Detect HP state change and dispatch callback (fired outside the
+         * critical section so user code can take its time / call into BSP). */
+        bsp_headphone_cb_t cb = NULL;
+        void *cb_arg = NULL;
+        bool fire = false;
+        portENTER_CRITICAL(&s_hp_mux);
+        if (s_hp_last_valid && hp != s_hp_last && s_hp_cb) {
+            cb = s_hp_cb;
+            cb_arg = s_hp_cb_arg;
+            fire = true;
+        }
+        s_hp_last = hp;
+        s_hp_last_valid = true;
+        portEXIT_CRITICAL(&s_hp_mux);
+        if (fire) cb(hp, cb_arg);
+
+        apply_speaker_pin_with_hp(mode, hp);
+
+        bool need_poll = (mode == BSP_SPEAKER_MODE_AUTO) || (s_hp_cb != NULL);
+        TickType_t wait = need_poll ? pdMS_TO_TICKS(200) : portMAX_DELAY;
+        ulTaskNotifyTake(pdTRUE, wait);
+    }
+}
+
+static esp_err_t start_speaker_task_once(void) {
+    if (s_speaker_task) return ESP_OK;
+    return xTaskCreate(speaker_task, "bsp_spk", 2048, NULL, 1, &s_speaker_task) == pdPASS
+        ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
 esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     esp_err_t err;
 
@@ -61,7 +132,7 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     // Initialize PI4IOE1 (address 0x43)
     err = pi4io_init(i2c0, 0x43, (pi4io_pin_config_t[8]){
         [0] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // RF_INT_EXT_SWITCH
-        [1] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true },   // SPK_EN
+        [1] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = false },  // SPK_EN — set by speaker_mode below
         [2] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true },   // EXT5V_EN
         [4] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true },   // LCD_RST
         [5] = { PI4IO_PIN_MODE_OUTPUT, .initial_value = true },   // TP_RST
@@ -69,6 +140,15 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
         [7] = { PI4IO_PIN_MODE_INPUT },                           // HP_DET
     }, &pi4ioe1);
     BSP_RETURN_ERR(err);
+
+    // Speaker amp policy — apply once synchronously, then spawn the poller
+    // only when AUTO needs it. Notify-driven so OFF/ON modes idle for free.
+    s_speaker_mode = config->audio.speaker_mode;
+    apply_speaker_pin(s_speaker_mode);
+    if (s_speaker_mode == BSP_SPEAKER_MODE_AUTO) {
+        err = start_speaker_task_once();
+        BSP_RETURN_ERR(err);
+    }
 
     // Initialize PI4IOE2 (address 0x44)
     err = pi4io_init(i2c0, 0x44, (pi4io_pin_config_t[8]){
@@ -298,4 +378,41 @@ esp_err_t bsp_tab5_audio_eq_set_biquads(const audio_eq_biquad_t *biquads, size_t
 }
 audio_eq_t bsp_tab5_audio_eq_handle(void) {
     return audio_eq;
+}
+
+esp_err_t bsp_tab5_audio_set_speaker_mode(bsp_speaker_mode_t mode) {
+    if (mode != BSP_SPEAKER_MODE_ON && mode != BSP_SPEAKER_MODE_AUTO &&
+        mode != BSP_SPEAKER_MODE_OFF) return ESP_ERR_INVALID_ARG;
+    if (!pi4ioe1) return ESP_ERR_INVALID_STATE;
+    s_speaker_mode = mode;
+    if (mode == BSP_SPEAKER_MODE_AUTO) {
+        esp_err_t err = start_speaker_task_once();
+        if (err != ESP_OK) return err;
+    }
+    if (s_speaker_task) {
+        xTaskNotifyGive(s_speaker_task);  /* task re-evaluates + re-arms wait */
+    } else {
+        apply_speaker_pin(mode);
+    }
+    return ESP_OK;
+}
+bsp_speaker_mode_t bsp_tab5_audio_get_speaker_mode(void) {
+    return s_speaker_mode;
+}
+bool bsp_tab5_audio_headphone_inserted(void) {
+    return hp_inserted_now();
+}
+
+esp_err_t bsp_tab5_audio_set_headphone_callback(bsp_headphone_cb_t cb, void *user) {
+    if (!pi4ioe1) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_hp_mux);
+    s_hp_cb_arg = user;
+    s_hp_cb     = cb;
+    portEXIT_CRITICAL(&s_hp_mux);
+    if (cb) {
+        esp_err_t err = start_speaker_task_once();
+        if (err != ESP_OK) return err;
+        xTaskNotifyGive(s_speaker_task);  /* re-evaluate need_poll */
+    }
+    return ESP_OK;
 }
