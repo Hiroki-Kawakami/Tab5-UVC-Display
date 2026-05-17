@@ -342,10 +342,54 @@ static void s_dma_apply_jpeg_transfer_ability(jpeg_strip_decoder_handle_t h,
     dma2d_set_transfer_ability(rx, &rx_ab);
 }
 
+// Full-range BT.601 YCbCr->RGB matrix (JPEG/JFIF convention, Y/Cb/Cr all in
+// [0,255], output in [0,255]):
+//     R = Y                  + 1.402   *(Cr - 128)
+//     G = Y - 0.344136*(Cb - 128) - 0.714136*(Cr - 128)
+//     B = Y + 1.772  *(Cb - 128)
+//
+// The 2D-DMA CSC unit evaluates  256 * Q = A*Y + B*Cb + C*Cr + D  with field
+// widths A[9:0]/B[10:0]/C[9:0]/D[17:0] (all signed two's complement, see
+// in_color_param_h/m/l_ch0 in ESP32-P4 TRM section 8.4). The IDF default
+// (DMA2D_COLOR_SPACE_CONV_PARAM_YUV2RGB_BT601) bakes in the limited-range
+// (Y_studio in [16,235]) 1.164*(Y-16) form, which under-saturates JPEG output
+// because MJPEG is full-range. We keep using DMA2D_CSC_RX_YUV*_TO_RGB*_601 to
+// drive input/output muxing + scramble setup, then overwrite the matrix here.
+//
+// Coefficients * 256 (rounded): 1.0->256, 1.402->359, 0.344136->88,
+// 0.714136->183, 1.772->454. Offsets chosen so a neutral input
+// (Y=0, Cb=128, Cr=128) maps to RGB=0 exactly: D_R = -359*128, D_G = (88+183)*128,
+// D_B = -454*128.
+static const int s_yuv2rgb_bt601_full_table[3][4] = {
+    { 256,    0,   359,  -45952 },  // R: param_h
+    { 256,  -88,  -183,   34688 },  // G: param_m
+    { 256,  454,     0,  -58112 },  // B: param_l
+};
+
+static void s_dma_load_full_range_bt601_matrix(void)
+{
+    dma2d_dev_t *dev = DMA2D_LL_GET_HW(0);
+    // Only RX channel 0 implements CSC (DMA2D_LL_RX_CHANNEL_SUPPORT_CSC_MASK = BIT0).
+    volatile dma2d_color_param_group_chn_reg_t *grp = &dev->in_channel0.in_color_param_group;
+    grp->param_h.a = s_yuv2rgb_bt601_full_table[0][0];
+    grp->param_h.b = s_yuv2rgb_bt601_full_table[0][1];
+    grp->param_h.c = s_yuv2rgb_bt601_full_table[0][2];
+    grp->param_h.d = s_yuv2rgb_bt601_full_table[0][3];
+    grp->param_m.a = s_yuv2rgb_bt601_full_table[1][0];
+    grp->param_m.b = s_yuv2rgb_bt601_full_table[1][1];
+    grp->param_m.c = s_yuv2rgb_bt601_full_table[1][2];
+    grp->param_m.d = s_yuv2rgb_bt601_full_table[1][3];
+    grp->param_l.a = s_yuv2rgb_bt601_full_table[2][0];
+    grp->param_l.b = s_yuv2rgb_bt601_full_table[2][1];
+    grp->param_l.c = s_yuv2rgb_bt601_full_table[2][2];
+    grp->param_l.d = s_yuv2rgb_bt601_full_table[2][3];
+}
+
 static void s_dma_apply_csc(jpeg_strip_decoder_handle_t h, dma2d_channel_handle_t rx)
 {
     dma2d_scramble_order_t post = DMA2D_SCRAMBLE_ORDER_BYTE2_1_0;
     dma2d_csc_rx_option_t opt = DMA2D_CSC_RX_NONE;
+    bool yuv_to_rgb_bt601 = false;
 
     if (h->engine->rgb_order == JPEG_DEC_RGB_ELEMENT_ORDER_RGB) {
         if (h->engine->output_format == JPEG_DECODE_OUT_FORMAT_RGB565) post = DMA2D_SCRAMBLE_ORDER_BYTE2_0_1;
@@ -354,15 +398,22 @@ static void s_dma_apply_csc(jpeg_strip_decoder_handle_t h, dma2d_channel_handle_
     if (h->engine->output_format == JPEG_DECODE_OUT_FORMAT_RGB565) {
         opt = (h->engine->conv_std == JPEG_YUV_RGB_CONV_STD_BT601)
               ? DMA2D_CSC_RX_YUV420_TO_RGB565_601 : DMA2D_CSC_RX_YUV420_TO_RGB565_709;
+        yuv_to_rgb_bt601 = (h->engine->conv_std == JPEG_YUV_RGB_CONV_STD_BT601);
     } else if (h->engine->output_format == JPEG_DECODE_OUT_FORMAT_RGB888) {
         opt = (h->engine->conv_std == JPEG_YUV_RGB_CONV_STD_BT601)
               ? DMA2D_CSC_RX_YUV420_TO_RGB888_601 : DMA2D_CSC_RX_YUV420_TO_RGB888_709;
+        yuv_to_rgb_bt601 = (h->engine->conv_std == JPEG_YUV_RGB_CONV_STD_BT601);
     } else if (h->engine->output_format == JPEG_DECODE_OUT_FORMAT_YUV444) {
         if (h->engine->sample_method == JPEG_DOWN_SAMPLING_YUV422)      opt = DMA2D_CSC_RX_YUV422_TO_YUV444;
         else if (h->engine->sample_method == JPEG_DOWN_SAMPLING_YUV420) opt = DMA2D_CSC_RX_YUV420_TO_YUV444;
     }
     dma2d_csc_config_t cfg = { .post_scramble = post, .rx_csc_option = opt };
     dma2d_configure_color_space_conversion(rx, &cfg);
+    // IDF just wrote the limited-range BT.601 matrix; clobber it with the
+    // JFIF full-range form that matches MJPEG content.
+    if (yuv_to_rgb_bt601) {
+        s_dma_load_full_range_bt601_matrix();
+    }
 }
 
 static bool s_on_job_picked(uint32_t num_chans, const dma2d_trans_channel_info_t *chans, void *uc)
