@@ -321,7 +321,18 @@ void PreviewScreen::onEnter() {
     // tears both down, and loops forever so the device can be unplugged and
     // re-plugged at runtime.
     xTaskCreatePinnedToCore([](void*){
+        // The MS2109 sometimes corrupts its streaming endpoint during
+        // enumeration (manifests as "Enqueue URB error: ESP_ERR_INVALID_STATE"
+        // inside uvc_host_stream_start). That error isn't propagated to us, so
+        // the only observable signal is "no frame ever arrives". Treat
+        // start-without-a-frame-within-this-window as a failure and force a
+        // teardown/reopen cycle.
+        constexpr TickType_t FIRST_FRAME_TIMEOUT = pdMS_TO_TICKS(3000);
         while (true) {
+            // Drain any stale give carried over from a previous iteration
+            // (e.g. a late disconnect that arrived after a forced teardown).
+            xSemaphoreTake(uvc_reopen_sem, 0);
+
             while (uvc.open(STREAM_W, STREAM_H, 30) != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
@@ -343,8 +354,29 @@ void PreviewScreen::onEnter() {
                 uac.start(rate, ch, bps);
             }
 
-            // Block until UVC_HOST_DEVICE_DISCONNECTED gets posted to the sem.
-            xSemaphoreTake(uvc_reopen_sem, portMAX_DELAY);
+            // Wait until either a frame starts flowing (then we just block
+            // for the eventual disconnect), or no frame arrives within the
+            // startup window (force-teardown and retry).
+            bool started = false;
+            TickType_t deadline = xTaskGetTickCount() + FIRST_FRAME_TIMEOUT;
+            while (true) {
+                if (xSemaphoreTake(uvc_reopen_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    break;  // disconnect arrived
+                }
+                if (uvc_streaming) {
+                    started = true;
+                    break;
+                }
+                if (xTaskGetTickCount() >= deadline) {
+                    ESP_LOGW(TAG, "UVC start timeout: no frame within %dms, forcing reopen",
+                             (int)pdTICKS_TO_MS(FIRST_FRAME_TIMEOUT));
+                    break;
+                }
+            }
+            if (started) {
+                // Frames flowing — wait indefinitely for the disconnect event.
+                xSemaphoreTake(uvc_reopen_sem, portMAX_DELAY);
+            }
             ESP_LOGI(TAG, "UVC disconnected, tearing down for reopen");
             uac.close();
             uvc.close();
@@ -358,13 +390,21 @@ void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
 }
 
 void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {
-    if (event->type == UVC_HOST_DEVICE_DISCONNECTED && connected_) {
+    if (event->type == UVC_HOST_DEVICE_DISCONNECTED) {
+        bool was_connected = connected_;
         connected_ = false;
         uvc_streaming = false;
-        // Auto-show the GUI so the user sees "Disconnected" + controls
-        // without needing to tap blindly on the (now blank) screen.
-        gui_set_visible(true);
-        lv_async_call([this](){ set_status_ui(false); });
+        if (was_connected) {
+            // Was actually streaming — reset the GUI to disconnected state.
+            // Auto-show the GUI so the user sees "Disconnected" + controls
+            // without needing to tap blindly on the (now blank) screen.
+            gui_set_visible(true);
+            lv_async_call([this](){ set_status_ui(false); });
+        }
+        // Always wake the supervisor — needed even if no frame ever arrived
+        // (silent URB enqueue failures during stream_start leave the device
+        // "open" but never streaming; the disconnect event is our only
+        // bus-side signal that the broken session must be torn down).
         if (uvc_reopen_sem) xSemaphoreGive(uvc_reopen_sem);
     }
 }
