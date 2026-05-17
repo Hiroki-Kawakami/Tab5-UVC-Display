@@ -185,7 +185,8 @@ USB UVC camera ── (uac_host_device driver) ──┐
                                               │  (xStreamBufferSend, timeout=0)
                                               ▼
                             uac_play consumer task (core 1, prio 10)
-                                              │  4 KiB chunks
+                                              │  4 KiB chunks → drift-correcting
+                                              │  Catmull–Rom cubic resampler
                                               ▼
                        bsp_tab5_audio_write → esp_codec_dev_write
                                               │
@@ -210,6 +211,30 @@ Key implementation decisions:
    contention with the 30fps render loop. Priority 10 > UAC driver (5) so
    the buffer drains promptly once data lands, but < renderer (16) so we
    never starve video.
+4. **Catmull–Rom cubic Hermite resampler in the consumer with
+   stream-buffer-fill feedback (drift correction).** Each iteration reads
+   the StreamBuffer bytes still queued *after* the receive, computes
+   `step = 1 + Kp·(fill_ratio − 0.5)` clamped to [0.99, 1.01], and
+   resamples the chunk by `step` before handing it to the codec. The
+   buffer fill is the only drift signal we have between the USB SOF and
+   I2S MCLK clock domains (DMA-side "remaining" is mathematically the
+   same signal, since `esp_codec_dev_write` blocks and keeps the DMA
+   queue full by construction). Continuous fractional resampling avoids
+   discrete sample insert/drop; the worst-case audible effect is a ±1%
+   pitch shift that only exists transiently while the loop pulls fill
+   back toward target. Catmull–Rom uses a sliding 4-sample window
+   (3 history samples per channel kept across chunk boundaries via
+   `hist_l[3]`/`hist_r[3]`) and Horner-evaluates a cubic that's exact at
+   `t=0` and `t=1`; coefficients depend only on the window so we compute
+   them once per input frame and reuse for all outputs that fall inside.
+   Output must be saturated — cubic Hermite can overshoot the input
+   range, unlike linear.
+5. **Frame alignment is the consumer's job.** `xStreamBufferReceive` is
+   byte-oriented and may return non-multiples of `FRAME_BYTES=4`. The
+   consumer carries up to 3 leftover bytes between iterations so the
+   resampler always sees whole stereo-16 frames. The byte stream is
+   treated as 48 kHz stereo 16-bit regardless of how UAC labelled it
+   (the MS2109 quirk — see below — funnels through the same path).
 
 UAC device detection is driven by the `uac_host` driver callback in
 `usb_host::UAC::driverEventCb`; the first `RX_CONNECTED` interface latches
@@ -228,15 +253,23 @@ plays correctly. **Do NOT** "fix" this by reconfiguring ES8388 to
 96k/mono — that would honour the false descriptor and break playback.
 Preserve the asymmetric configuration for any device matching that VID/PID.
 
-### Clock-domain drift (unfinished)
+### Clock-domain drift
 
 USB SOF (UAC supply rate) and ES8388 I2S MCLK are independent clock
-domains — the 32 KiB stream buffer absorbs short-term jitter but does NOT
-correct long-term drift (typically a few hundred ppm). Symptoms on
-multi-minute streams: buffer either fills (→ tail-drop glitches) or
-empties (→ DMA underrun, `auto_clear_after_cb=true` keeps it silent).
-Real async-UAC sync would need software resampling driven by buffer-level
-feedback or MCLK fine-adjust; neither is implemented yet.
+domains — typically a few hundred ppm apart, which would otherwise show
+up on multi-minute streams as the StreamBuffer slowly filling
+(→ tail-drop glitches) or emptying (→ DMA underrun, silent because of
+`auto_clear_after_cb=true`).
+
+The consumer task corrects for this with a software resampler driven by
+the buffer-fill signal — see decision #4 above for the loop math. The
+resampler bounds the correction to ±1% (`STEP_MIN=0.99`, `STEP_MAX=1.01`)
+which is far above any realistic clock drift but well below audibility,
+so steady-state behaviour is "buffer parks near half-full, pitch shift
+is imperceptibly small". The `xStreamBufferSend` drop-on-overflow path in
+`handleRxDone` is now strictly a backstop — if it ever fires in steady
+state, either Kp is too small to track the drift or the loop is being
+starved.
 
 ## Things to check before changing the pipeline
 

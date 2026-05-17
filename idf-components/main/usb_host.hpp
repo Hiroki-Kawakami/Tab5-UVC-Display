@@ -79,6 +79,7 @@ private:
 
     // Decouple RX_DONE (UAC driver task) from the codec write (consumer task)
     StreamBufferHandle_t tx_buf_{nullptr};
+    size_t tx_buf_size_{0};
     TaskHandle_t consumer_task_{nullptr};
 
     // Detection synchronization
