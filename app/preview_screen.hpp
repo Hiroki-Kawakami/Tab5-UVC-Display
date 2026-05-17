@@ -13,9 +13,14 @@ public:
 private:
     lv_obj_t *status_container_ = nullptr;
     lv_obj_t *status_label_ = nullptr;
+    lv_obj_t *volume_label_ = nullptr;
     lv_obj_t *volume_slider_ = nullptr;
     lv_obj_t *brightness_slider_ = nullptr;
+    uint8_t  speaker_volume_ = 50;   // active when HP unplugged  (NVS: "vol")
+    uint8_t  hp_volume_      = 50;   // active when HP plugged-in (NVS: "hp_vol")
+    bool     hp_connected_   = false;
     volatile bool connected_ = false;
 
     void set_status_ui(bool connected);
+    void apply_active_volume();   // push current mode's volume to slider/label/codec
 };

@@ -45,7 +45,8 @@ volatile bool uvc_streaming = false;
 SemaphoreHandle_t uvc_reopen_sem = nullptr;
 
 NVS settings_nvs("preview");
-constexpr const char *NVS_KEY_VOLUME     = "vol";
+constexpr const char *NVS_KEY_VOLUME     = "vol";      // speaker (HP unplugged)
+constexpr const char *NVS_KEY_HP_VOLUME  = "hp_vol";   // headphones (HP plugged in)
 constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
 
 uint8_t load_setting(const char *key, uint8_t fallback) {
@@ -156,6 +157,17 @@ void PreviewScreen::set_status_ui(bool connected) {
     lv_label_set_text(status_label_, connected ? "Connected" : "Disconnected");
 }
 
+void PreviewScreen::apply_active_volume() {
+    uint8_t v = hp_connected_ ? hp_volume_ : speaker_volume_;
+    // lv_slider_set_value does not fire LV_EVENT_VALUE_CHANGED — programmatic
+    // updates here won't recurse into the slider handler.
+    if (volume_slider_) lv_slider_set_value(volume_slider_, v, LV_ANIM_OFF);
+    if (volume_label_)  lv_label_set_text(volume_label_,
+                                          hp_connected_ ? "Volume (Headphones)"
+                                                        : "Volume (Speaker)");
+    bsp_tab5_audio_set_volume(v);
+}
+
 void PreviewScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_hex(0xCCCCCC), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
@@ -174,23 +186,28 @@ void PreviewScreen::build() {
     lv_obj_set_style_text_font(status_label_, &lv_font_montserrat_20, 0);
     set_status_ui(false);
 
-    auto vol_lbl = lv_label_create(root_);
-    lv_label_set_text(vol_lbl, "Volume");
-    lv_obj_set_width(vol_lbl, LV_PCT(100));
-    lv_obj_set_style_margin_top(vol_lbl, 20, 0);
+    speaker_volume_ = load_setting(NVS_KEY_VOLUME, 50);
+    hp_volume_      = load_setting(NVS_KEY_HP_VOLUME, 40);
+    hp_connected_   = bsp_tab5_audio_headphone_inserted();
+
+    volume_label_ = lv_label_create(root_);
+    lv_obj_set_width(volume_label_, LV_PCT(100));
+    lv_obj_set_style_margin_top(volume_label_, 20, 0);
 
     volume_slider_ = lv_slider_create(root_);
     lv_obj_set_width(volume_slider_, LV_PCT(100));
     lv_slider_set_range(volume_slider_, 1, 100);
-    lv_slider_set_value(volume_slider_, load_setting(NVS_KEY_VOLUME, 50), LV_ANIM_OFF);
-    lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
+    lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
-        bsp_tab5_audio_set_volume(lv_slider_get_value(s));
+        uint8_t v = (uint8_t)lv_slider_get_value(s);
+        (hp_connected_ ? hp_volume_ : speaker_volume_) = v;
+        bsp_tab5_audio_set_volume(v);
     });
     // Persist only on release so we don't hammer NVS with every drag tick.
-    lv_obj_add_event_fn(volume_slider_, LV_EVENT_RELEASED, [](lv_event_t *e){
+    lv_obj_add_event_fn(volume_slider_, LV_EVENT_RELEASED, [this](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
-        save_setting(NVS_KEY_VOLUME, (uint8_t)lv_slider_get_value(s));
+        save_setting(hp_connected_ ? NVS_KEY_HP_VOLUME : NVS_KEY_VOLUME,
+                     (uint8_t)lv_slider_get_value(s));
     });
 
     auto br_lbl = lv_label_create(root_);
@@ -211,8 +228,18 @@ void PreviewScreen::build() {
         save_setting(NVS_KEY_BRIGHTNESS, (uint8_t)lv_slider_get_value(s));
     });
 
-    bsp_tab5_audio_set_volume(lv_slider_get_value(volume_slider_));
+    apply_active_volume();
     pf_port::display_set_brightness(lv_slider_get_value(brightness_slider_));
+
+    // BSP polls HP_DET ~5 Hz and fires this from the bsp_spk task on change.
+    // Bounce the actual UI/codec update onto the LVGL thread.
+    bsp_tab5_audio_set_headphone_callback([](bool inserted, void *user){
+        auto self = static_cast<PreviewScreen*>(user);
+        lv_async_call([self, inserted]{
+            self->hp_connected_ = inserted;
+            self->apply_active_volume();
+        });
+    }, this);
 }
 
 void PreviewScreen::onEnter() {
