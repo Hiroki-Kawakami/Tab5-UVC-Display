@@ -49,7 +49,10 @@ ESP-IDF v5.4.3 lives at `/nix/store/1jf3iqwyp77i8y54cgn6qxbrwl3wx5mz-esp-idf-v5.
   is intentional so that the implicit "all-components-available" mode stays
   on; adding `REQUIRES`/`PRIV_REQUIRES` here breaks transitive header lookup
   (e.g. `bsp_tab5.h`, `esp_timer.h`).
-- `idf-components/m5tab5-bsp/` — vendored BSP for the panel + touch.
+- `idf-components/m5tab5-bsp/` — vendored BSP for the panel + touch +
+  audio. `inc/audio_eq.h` + `src/audio_eq.c` is the cascaded-biquad EQ /
+  software fader / mono-mix DSP block that sits inside
+  `bsp_tab5_audio_write` (see the audio section below).
 - `idf-components/jpeg_ppa_pipeline/` — the strip-pipelined JPEG + PPA path.
   Bypasses IDF's `jpeg_decoder_process()` by reaching into ESP-IDF private
   headers; do **not** override `esp_driver_jpeg` (the user explicitly rejected
@@ -165,11 +168,20 @@ If output looks mirrored, swap the 90/270 formulas.
 Tab5 has an ES8388 codec driving the on-board speaker. The
 `idf-components/m5tab5-bsp/devices/es8388/` wrapper sets up
 `I2S0 std mode TX` (mclk=30, bclk=27, ws=29, dout=26, din=28, 48kHz/16bit
-stereo by default) plus `esp_codec_dev` in DAC mode. `PI4IOE1.SPK_EN`
-(bit 1) is already initialised to `true` in `bsp_tab5_init`, so the speaker
-amp is on at boot. `bsp_tab5_audio_{open,close,reconfig,write,set_volume,
-set_mute}` are the public API; the codec starts muted (volume=0). Only the
-TX path is wired up — RX TDM (mic capture) can be added later if needed.
+stereo by default) plus `esp_codec_dev` in DAC mode. The speaker amp gate
+(`PI4IOE1.SPK_EN`, bit 1) is driven by the speaker-mode policy described
+below — **not** raised at pi4io init time. After init the codec is pinned
+at max output (`es8388_set_volume(es8388, 100)`); user-facing volume is
+delivered by the software fader in `audio_eq` instead of the codec's
+volume register. Only the TX path is wired up — RX TDM (mic capture) can
+be added later if needed.
+
+Public API surface (`bsp_tab5.h`):
+- `bsp_tab5_audio_{open,close,reconfig,write,set_volume,set_mute,get_volume}`
+- `bsp_tab5_audio_eq_{set_enabled,is_enabled,set_biquads,handle}` — runtime EQ control
+- `bsp_tab5_audio_{set,get}_speaker_mode` + `bsp_tab5_audio_headphone_inserted`
+- `bsp_tab5_audio_set_headphone_callback(cb, user)` — fired on HP plug/unplug
+- `bsp_tab5_audio_{set,get}_mono_mix` — stereo→mono downmix for L-only speaker
 
 UAC audio output flow:
 
@@ -188,10 +200,16 @@ USB UVC camera ── (uac_host_device driver) ──┐
                                               │  4 KiB chunks → drift-correcting
                                               │  Catmull–Rom cubic resampler
                                               ▼
-                       bsp_tab5_audio_write → esp_codec_dev_write
+                              bsp_tab5_audio_write
                                               │
                                               ▼
-                                         I2S TX DMA → ES8388 → speaker
+                            audio_eq (biquads → gain fade → mono mix)
+                                              │
+                                              ▼
+                                    es8388_write → esp_codec_dev_write
+                                              │
+                                              ▼
+                            I2S TX DMA → ES8388 DAC → SPK_EN amp / HP jack
 ```
 
 Key implementation decisions:
@@ -270,6 +288,125 @@ is imperceptibly small". The `xStreamBufferSend` drop-on-overflow path in
 `handleRxDone` is now strictly a backstop — if it ever fires in steady
 state, either Kp is too small to track the drift or the loop is being
 starved.
+
+### Audio DSP block (`audio_eq` component)
+
+`idf-components/m5tab5-bsp/{inc/audio_eq.h,src/audio_eq.c}` — a small DSP
+block plumbed into `bsp_tab5_audio_write`. Three concerns share a single
+per-buffer pass:
+
+1. **Cascaded biquads.** RBJ "Audio EQ Cookbook" designers (`peaking`,
+   `low_shelf`, `high_shelf`, `lowpass`, `highpass`) emit
+   `audio_eq_biquad_t` structs that get copied into the chain via
+   `audio_eq_set_biquads`. Direct-form II transposed, normalised to
+   `a0=1`, up to `max_stages` (default 8). State is per-channel.
+2. **Software gain with per-frame fade.** `audio_eq_set_gain(target,
+   fade_ms)` updates the cursor; the per-frame loop interpolates
+   `current_gain` toward `target_gain` over `fade_ms`. Volume control
+   was moved off the ES8388 hardware volume register (which clicks on
+   every step) onto this fader — the codec is pinned at `vol=100`
+   forever after init.
+3. **Stereo→mono downmix.** When enabled, the output of each frame is
+   replaced by `(L+R)/2` on both channels. Tab5 only wires L into the
+   speaker amp, so this is the only way R-side content reaches the
+   speaker.
+
+Pipeline order inside the loop: per-channel biquads → per-channel gain →
+optional mono mix → saturate to int16. Gain comes **after** biquads so
+changing it doesn't disturb the filter memory (= no transient on
+volume slides). Mono mix is the last step so per-channel EQ still runs
+on the original stereo image before being collapsed.
+
+**Lock-snapshot pattern in `audio_eq_process`.** The mutex is taken only
+to snapshot `{biquad coefficients, channels, gain cursor, fade params,
+mono_mix flag}`, then the per-sample loop runs lock-free. State writeback
+(advanced `current_gain` / `fade_remaining`) happens under another short
+critical section that *only* writes back if `target_gain` hasn't been
+touched meanwhile, so a concurrent `set_gain` from UI doesn't get
+clobbered. Earlier the mutex was held across the whole ~1–2 ms loop and
+rapid slider drags caused observable stalls on the LVGL/UVC paths on the
+same core.
+
+`audio_eq_set_biquads` resets filter state (the new coefficients have no
+meaningful history), so swapping presets on HP plug doesn't produce a
+zip click — the gain stage continues smoothly.
+
+### Speaker amp gate + headphone detect
+
+Tab5's speaker amp is gated by `PI4IOE1` pin 1 (`SPK_EN`), and the
+3.5 mm jack's detect switch is on `PI4IOE1` pin 7 (`HP_DET`). HP_DET is
+pulled up externally, the jack's NC switch shorts the line to GND when
+no plug is inserted, so **`HP_DET=1` means headphones inserted**.
+
+`bsp_speaker_mode_t` selects the policy applied to SPK_EN:
+
+- `BSP_SPEAKER_MODE_ON` (= 0; default for zero-init configs)
+- `BSP_SPEAKER_MODE_AUTO` — amp on only while HP is *not* inserted
+- `BSP_SPEAKER_MODE_OFF`
+
+A dedicated task `bsp_spk` (prio 1, stack 2 KiB) owns SPK_EN. The task
+**is only spawned when needed** — i.e. when mode = AUTO or when an app
+registered a HP callback. For OFF/ON modes with no callback, SPK_EN is
+set once in `bsp_tab5_init` and we're done; no task overhead.
+
+`bsp_tab5_audio_set_headphone_callback(cb, user)` registers a single
+callback fired on every HP state change (~200 ms granularity from the
+AUTO poll). The callback runs from the `bsp_spk` task — UI/LVGL work
+must be bounced via `lv_async_call`. Registration captures the current
+HP state into `s_hp_last`, so the callback never fires a "stale"
+notification at registration time.
+
+**Anti-pop init order** (this matters — the user notices each ms of
+remaining click):
+
+1. `pi4io_init` with SPK_EN initial value = **false** (amp stays off)
+2. (display, touch, codec configuration — amp off the whole time)
+3. `es8388_init` — codec configured, muted
+4. `audio_eq_init` → `audio_eq_set_gain(0, 0)` (silent gain)
+5. `es8388_set_volume(100)` — codec unmuted, but SPK_EN is still LOW so
+   the unmute click never reaches the speaker
+6. `vTaskDelay(50 ms)` — DAC analog stage settles
+7. `apply_speaker_pin(s_speaker_mode)` — SPK_EN finally goes high with
+   a silent, stable input
+
+Steps 1–5 cleanly eliminate the codec-unmute pop. The amp's own
+power-on transient at step 7 is the only remaining click source
+(HW-level event, can't be suppressed entirely in software).
+
+### Per-output audio policy (`preview_screen`)
+
+Three things differ between speaker output and headphone output, all
+switched together by the HP callback registered in `PreviewScreen::build`:
+
+| | Speaker (`hp_connected_=false`) | Headphone (`hp_connected_=true`) |
+|---|---|---|
+| Volume | NVS key `"vol"` | NVS key `"hp_vol"` |
+| EQ preset | `speaker_eq_stages()` | `headphone_eq_stages()` |
+| Mono mix | ON, `(L+R)/2` | OFF (stereo) |
+| Slider label | "Volume (Speaker)" | "Volume (Headphones)" |
+
+`apply_active_volume`, `apply_active_eq`, `apply_active_mono_mix` are
+the three "push current mode → BSP" helpers; the HP callback dispatches
+all three through `lv_async_call`. The two EQ-stage arrays are
+function-local `static const` arrays (the cookbook designers run once on
+first call and the coefficients are cached for the lifetime of the
+process).
+
+Volume → gain curve: `gain_db = (vol-100) × 0.4` → −40 dB at vol=1,
+0 dB at vol=100. `vol=0` is a hard zero (true silence). All transitions
+fade over 100 ms (`BSP_VOLUME_FADE_MS`). `bsp_tab5_audio_set_volume`
+short-circuits when the value hasn't changed so LVGL slider event
+duplicates don't churn the fader.
+
+Current speaker preset is **bass-only** (HPF 80 Hz + low-shelf +7 dB
+@300 Hz + peaking +3 dB @150 Hz, mid/high left flat). The small 1 W /
+8 Ω driver responded badly to mid/high EQ in all the variations we
+tried — perceptually worse than no EQ — so we stopped fighting it. The
+150 Hz peaking sits on top of the shelf to put extra punch near the
+driver's Fs where it actually radiates efficiently; the shelf alone
+wastes energy on the 50–100 Hz range the cone can't reproduce. The
+HP preset is a leftover V-shape from earlier experiments and is the
+right next thing to tune separately.
 
 ## Things to check before changing the pipeline
 
