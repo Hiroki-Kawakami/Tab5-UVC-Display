@@ -23,4 +23,5 @@ private:
 
     void set_status_ui(bool connected);
     void apply_active_volume();   // push current mode's volume to slider/label/codec
+    void apply_active_eq();       // push current mode's EQ stages to the BSP
 };

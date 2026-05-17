@@ -18,23 +18,8 @@ void init(int fb_num, PixelFormat pixel_format) {
     bsp_config.audio.eq.max_stages = 8;
     bsp_config.audio.speaker_mode = BSP_SPEAKER_MODE_AUTO;
     bsp_tab5_init(&bsp_config);
-
-    // Speaker-out EQ for the 3.5mm jack. A swept-sine measurement showed the
-    // line-out rising ~35 dB from 50 Hz to a peak near 12 kHz (typical AC-
-    // coupling HPF shape). Bass-up / mid-down (V-shape) approach: a modest
-    // low-shelf boost lifts the bottom, broad mid cuts push the 0.8–3 kHz
-    // region down, and the highs are left alone so the result stays open
-    // without sounding muffled. Cutting mids instead of boosting bass + highs
-    // also saves headroom (lower clipping risk). A 50 Hz HPF keeps the shelf
-    // from spending headroom on unrecoverable sub-bass.
-    const uint32_t fs = 48000;
-    const audio_eq_biquad_t eq_stages[] = {
-        audio_eq_design_highpass (fs,   50.0f, 0.707f),
-        audio_eq_design_low_shelf(fs,  150.0f, 0.707f, +11.0f),
-        audio_eq_design_peaking  (fs, 1000.0f, 0.80f,  -5.0f),
-        audio_eq_design_peaking  (fs, 2500.0f, 1.00f,  -3.0f),
-    };
-    bsp_tab5_audio_eq_set_biquads(eq_stages, sizeof(eq_stages) / sizeof(eq_stages[0]));
+    // EQ coefficients themselves are owned by PreviewScreen (speaker vs HP
+    // presets, swapped by the HP-detect callback).
 
     lvgl_port_cfg_t config = {
         .task_priority = 4,

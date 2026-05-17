@@ -49,6 +49,35 @@ constexpr const char *NVS_KEY_VOLUME     = "vol";      // speaker (HP unplugged)
 constexpr const char *NVS_KEY_HP_VOLUME  = "hp_vol";   // headphones (HP plugged in)
 constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
 
+// EQ presets. Both target the 3.5mm line-out measurement (rising AC-coupling
+// HPF shape, peak near 12 kHz). For now Speaker and Headphone share the same
+// coefficients — tune separately once each path has been measured on its own.
+constexpr uint32_t kEqFs = 48000;
+const audio_eq_biquad_t *speaker_eq_stages(size_t *n) {
+    // 1W / 8Ω small driver. Bass-only lift, mid/high left untouched. The
+    // 80 Hz HPF protects the cone from sub-bass excursion (the driver can't
+    // reproduce it anyway). The 150 Hz peaking sits on top of the shelf to
+    // put extra punch near the driver's Fs, where small speakers actually
+    // radiate efficiently.
+    static const audio_eq_biquad_t stages[] = {
+        audio_eq_design_highpass (kEqFs,  80.0f, 0.707f),
+        audio_eq_design_low_shelf(kEqFs, 300.0f, 0.707f, +7.0f),
+        audio_eq_design_peaking  (kEqFs, 150.0f, 1.20f,  +3.0f),
+    };
+    *n = sizeof(stages) / sizeof(stages[0]);
+    return stages;
+}
+const audio_eq_biquad_t *headphone_eq_stages(size_t *n) {
+    static const audio_eq_biquad_t stages[] = {
+        audio_eq_design_highpass (kEqFs,   50.0f, 0.707f),
+        audio_eq_design_low_shelf(kEqFs,  150.0f, 0.707f, +11.0f),
+        audio_eq_design_peaking  (kEqFs, 1000.0f, 0.80f,  -5.0f),
+        audio_eq_design_peaking  (kEqFs, 2500.0f, 1.00f,  -3.0f),
+    };
+    *n = sizeof(stages) / sizeof(stages[0]);
+    return stages;
+}
+
 uint8_t load_setting(const char *key, uint8_t fallback) {
     uint8_t v = fallback;
     if (settings_nvs.get(key, &v) != NVS::Error::OK) v = fallback;
@@ -168,6 +197,13 @@ void PreviewScreen::apply_active_volume() {
     bsp_tab5_audio_set_volume(v);
 }
 
+void PreviewScreen::apply_active_eq() {
+    size_t n;
+    const audio_eq_biquad_t *stages = hp_connected_ ? headphone_eq_stages(&n)
+                                                    : speaker_eq_stages(&n);
+    bsp_tab5_audio_eq_set_biquads(stages, n);
+}
+
 void PreviewScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_hex(0xCCCCCC), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
@@ -229,6 +265,7 @@ void PreviewScreen::build() {
     });
 
     apply_active_volume();
+    apply_active_eq();
     pf_port::display_set_brightness(lv_slider_get_value(brightness_slider_));
 
     // BSP polls HP_DET ~5 Hz and fires this from the bsp_spk task on change.
@@ -238,6 +275,7 @@ void PreviewScreen::build() {
         lv_async_call([self, inserted]{
             self->hp_connected_ = inserted;
             self->apply_active_volume();
+            self->apply_active_eq();
         });
     }, this);
 }
