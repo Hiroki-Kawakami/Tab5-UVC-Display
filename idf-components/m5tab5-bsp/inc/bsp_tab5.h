@@ -78,6 +78,10 @@ esp_err_t bsp_tab5_audio_set_speaker_mode(bsp_speaker_mode_t mode);
 bsp_speaker_mode_t bsp_tab5_audio_get_speaker_mode(void);
 bool      bsp_tab5_audio_headphone_inserted(void);
 
+/* Stereo→mono downmix for speaker output (only L wired on Tab5). */
+esp_err_t bsp_tab5_audio_set_mono_mix(bool enabled);
+bool      bsp_tab5_audio_get_mono_mix(void);
+
 /* Headphone insert/remove notification.
  * Fires from the internal poller task whenever HP_DET changes (~200 ms granularity).
  * Pass NULL to unregister. Only one callback at a time. */

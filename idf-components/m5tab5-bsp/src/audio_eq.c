@@ -36,6 +36,7 @@ struct audio_eq_state {
     float    target_gain;
     float    gain_step;                /* per-frame delta toward target */
     uint32_t fade_remaining;           /* frames left to step */
+    bool     mono_mix;                 /* (L+R)/2 → both channels (stereo only) */
 };
 
 static inline float biquad_step(const audio_eq_biquad_t *b, biquad_state_t *s, float x) {
@@ -85,6 +86,7 @@ esp_err_t audio_eq_init(const audio_eq_config_t *config, audio_eq_t *out_eq) {
     eq->target_gain     = 1.0f;
     eq->gain_step       = 0.0f;
     eq->fade_remaining  = 0;
+    eq->mono_mix        = false;
     if (initial_n) memcpy(eq->biquads, config->initial_biquads, initial_n * sizeof(audio_eq_biquad_t));
 
     *out_eq = eq;
@@ -164,6 +166,7 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
     size_t   n_stages;
     uint8_t  channels;
     bool     do_biquads;
+    bool     mono_mix;
     float    current_gain, target_gain, gain_step;
     uint32_t fade_remaining;
     biquad_state_t *states;
@@ -172,6 +175,7 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
     n_stages       = eq->num_stages;
     channels       = eq->channels;
     do_biquads     = eq->enabled && n_stages > 0;
+    mono_mix       = eq->mono_mix && channels == 2;
     current_gain   = eq->current_gain;
     target_gain    = eq->target_gain;
     gain_step      = eq->gain_step;
@@ -191,7 +195,7 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
     xSemaphoreGive(eq->mutex);
 
     const bool apply_gain = (current_gain != 1.0f) || (target_gain != 1.0f) || (fade_remaining > 0);
-    if (!do_biquads && !apply_gain) return ESP_OK;
+    if (!do_biquads && !apply_gain && !mono_mix) return ESP_OK;
 
     const size_t frame_bytes = sizeof(int16_t) * channels;
     if (bytes % frame_bytes) return ESP_ERR_INVALID_SIZE;
@@ -206,6 +210,7 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
         }
         const float g = current_gain;
 
+        float ys[2];
         for (uint8_t ch = 0; ch < channels; ch++) {
             float x = (float)p[f * channels + ch];
             if (do_biquads) {
@@ -214,6 +219,15 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
                 }
             }
             x *= g;
+            ys[ch] = x;
+        }
+        if (mono_mix) {
+            const float mono = (ys[0] + ys[1]) * 0.5f;
+            ys[0] = mono;
+            ys[1] = mono;
+        }
+        for (uint8_t ch = 0; ch < channels; ch++) {
+            float x = ys[ch];
             if (x >  32767.0f) x =  32767.0f;
             if (x < -32768.0f) x = -32768.0f;
             p[f * channels + ch] = (int16_t)lrintf(x);
@@ -256,6 +270,18 @@ esp_err_t audio_eq_set_gain(audio_eq_t eq, float target_gain, uint32_t fade_ms) 
 
 float audio_eq_get_gain(audio_eq_t eq) {
     return eq ? eq->target_gain : 0.0f;
+}
+
+esp_err_t audio_eq_set_mono_mix(audio_eq_t eq, bool enabled) {
+    if (!eq) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(eq->mutex, portMAX_DELAY);
+    eq->mono_mix = enabled;
+    xSemaphoreGive(eq->mutex);
+    return ESP_OK;
+}
+
+bool audio_eq_get_mono_mix(audio_eq_t eq) {
+    return eq && eq->mono_mix;
 }
 
 /* ---------------- RBJ Cookbook designers ---------------- */

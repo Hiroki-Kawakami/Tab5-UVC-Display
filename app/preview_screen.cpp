@@ -204,6 +204,13 @@ void PreviewScreen::apply_active_eq() {
     bsp_tab5_audio_eq_set_biquads(stages, n);
 }
 
+void PreviewScreen::apply_active_mono_mix() {
+    // Tab5 wires only L into the speaker amp; mix L+R into both channels so
+    // mono speakers don't drop R-side content. HP jack carries both — keep
+    // stereo there.
+    bsp_tab5_audio_set_mono_mix(!hp_connected_);
+}
+
 void PreviewScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_hex(0xCCCCCC), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
@@ -266,6 +273,7 @@ void PreviewScreen::build() {
 
     apply_active_volume();
     apply_active_eq();
+    apply_active_mono_mix();
     pf_port::display_set_brightness(lv_slider_get_value(brightness_slider_));
 
     // BSP polls HP_DET ~5 Hz and fires this from the bsp_spk task on change.
@@ -276,6 +284,7 @@ void PreviewScreen::build() {
             self->hp_connected_ = inserted;
             self->apply_active_volume();
             self->apply_active_eq();
+            self->apply_active_mono_mix();
         });
     }, this);
 }

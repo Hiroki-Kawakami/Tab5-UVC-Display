@@ -448,6 +448,14 @@ bool bsp_tab5_audio_headphone_inserted(void) {
     return hp_inserted_now();
 }
 
+esp_err_t bsp_tab5_audio_set_mono_mix(bool enabled) {
+    if (!audio_eq) return ESP_ERR_INVALID_STATE;
+    return audio_eq_set_mono_mix(audio_eq, enabled);
+}
+bool bsp_tab5_audio_get_mono_mix(void) {
+    return audio_eq_get_mono_mix(audio_eq);
+}
+
 esp_err_t bsp_tab5_audio_set_headphone_callback(bsp_headphone_cb_t cb, void *user) {
     if (!pi4ioe1) return ESP_ERR_INVALID_STATE;
     portENTER_CRITICAL(&s_hp_mux);

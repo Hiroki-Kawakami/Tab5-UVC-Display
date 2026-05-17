@@ -62,6 +62,11 @@ esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes);
 esp_err_t audio_eq_set_gain(audio_eq_t eq, float target_gain, uint32_t fade_ms);
 float     audio_eq_get_gain(audio_eq_t eq);   /*!< target (not interpolated) */
 
+/* Stereo→mono downmix after gain. When enabled, both output channels carry
+ * (L+R)/2 so a mono-wired speaker hears content from both incoming channels. */
+esp_err_t audio_eq_set_mono_mix(audio_eq_t eq, bool enabled);
+bool      audio_eq_get_mono_mix(audio_eq_t eq);
+
 /* RBJ cookbook designers — f0 in Hz, gain_db only used for peaking/shelf. */
 audio_eq_biquad_t audio_eq_design_peaking   (uint32_t fs, float f0, float q, float gain_db);
 audio_eq_biquad_t audio_eq_design_low_shelf (uint32_t fs, float f0, float q, float gain_db);
