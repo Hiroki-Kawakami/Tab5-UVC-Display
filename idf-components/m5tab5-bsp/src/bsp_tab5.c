@@ -16,6 +16,7 @@
 #include "st7123/st7123_lcd.h"
 #include "st7123/st7123_touch.h"
 #include "es8388/es8388.h"
+#include "audio_eq.h"
 #include "nvs_flash.h"
 #include "esp_hosted.h"
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
@@ -37,6 +38,7 @@ static gt911_touch_t gt911;
 static st7123_lcd_t st7123_lcd;
 static st7123_touch_t st7123_touch;
 static es8388_t es8388;
+static audio_eq_t audio_eq;
 
 esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     esp_err_t err;
@@ -151,6 +153,24 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "ES8388 init failed: %d (continuing without audio)", err);
             es8388 = NULL;
+        } else {
+            uint32_t rate = config->audio.sample_rate    ? config->audio.sample_rate    : 48000;
+            uint8_t  bps  = config->audio.bits_per_sample ? config->audio.bits_per_sample : 16;
+            uint8_t  ch   = config->audio.channels        ? config->audio.channels        : 2;
+            audio_eq_config_t eq_cfg = {
+                .sample_rate        = rate,
+                .channels           = ch,
+                .bits_per_sample    = bps,
+                .max_stages         = config->audio.eq.max_stages,
+                .enabled            = config->audio.eq.enable,
+                .initial_biquads    = config->audio.eq.biquads,
+                .initial_num_stages = config->audio.eq.num_stages,
+            };
+            err = audio_eq_init(&eq_cfg, &audio_eq);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "audio_eq_init failed: %d (EQ disabled)", err);
+                audio_eq = NULL;
+            }
         }
     }
 
@@ -240,10 +260,17 @@ esp_err_t bsp_tab5_audio_close(void) {
 }
 esp_err_t bsp_tab5_audio_reconfig(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels) {
     if (!es8388) return ESP_ERR_INVALID_STATE;
-    return es8388_reconfig_output(es8388, sample_rate, bits_per_sample, channels);
+    esp_err_t err = es8388_reconfig_output(es8388, sample_rate, bits_per_sample, channels);
+    if (err == ESP_OK && audio_eq) {
+        audio_eq_reconfig(audio_eq, sample_rate, channels, bits_per_sample);
+    }
+    return err;
 }
-esp_err_t bsp_tab5_audio_write(const void *data, size_t len) {
+esp_err_t bsp_tab5_audio_write(void *data, size_t len) {
     if (!es8388) return ESP_ERR_INVALID_STATE;
+    if (audio_eq && audio_eq_is_enabled(audio_eq)) {
+        audio_eq_process(audio_eq, data, len);
+    }
     return es8388_write(es8388, data, len);
 }
 esp_err_t bsp_tab5_audio_set_volume(int volume) {
@@ -256,4 +283,19 @@ esp_err_t bsp_tab5_audio_set_mute(bool mute) {
 }
 int bsp_tab5_audio_get_volume(void) {
     return es8388 ? es8388_get_volume(es8388) : -1;
+}
+
+esp_err_t bsp_tab5_audio_eq_set_enabled(bool enabled) {
+    if (!audio_eq) return ESP_ERR_INVALID_STATE;
+    return audio_eq_set_enabled(audio_eq, enabled);
+}
+bool bsp_tab5_audio_eq_is_enabled(void) {
+    return audio_eq_is_enabled(audio_eq);
+}
+esp_err_t bsp_tab5_audio_eq_set_biquads(const audio_eq_biquad_t *biquads, size_t num_stages) {
+    if (!audio_eq) return ESP_ERR_INVALID_STATE;
+    return audio_eq_set_biquads(audio_eq, biquads, num_stages);
+}
+audio_eq_t bsp_tab5_audio_eq_handle(void) {
+    return audio_eq;
 }

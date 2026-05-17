@@ -1,0 +1,66 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ *
+ * Cascaded biquad EQ for fixed-point PCM streams.
+ *
+ * Filters are normalised to a0=1 and evaluated with Direct-Form II Transposed:
+ *   y[n] = b0*x[n] + z1
+ *   z1   = b1*x[n] - a1*y[n] + z2
+ *   z2   = b2*x[n] - a2*y[n]
+ *
+ * Designer helpers follow the RBJ "Audio EQ Cookbook" formulae.
+ */
+
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    float b0, b1, b2;
+    float a1, a2;
+} audio_eq_biquad_t;
+
+typedef struct audio_eq_state *audio_eq_t;
+
+typedef struct {
+    uint32_t sample_rate;
+    uint8_t  channels;                 /*!< 1 or 2 — interleaved */
+    uint8_t  bits_per_sample;          /*!< 16 supported */
+    size_t   max_stages;               /*!< 0 -> max(initial_num_stages, 8) */
+    bool     enabled;                  /*!< initial enable state */
+    const audio_eq_biquad_t *initial_biquads;
+    size_t   initial_num_stages;
+} audio_eq_config_t;
+
+esp_err_t audio_eq_init(const audio_eq_config_t *config, audio_eq_t *eq);
+esp_err_t audio_eq_deinit(audio_eq_t eq);
+
+/* Replace coefficients and reset filter state. num_stages=0 clears. */
+esp_err_t audio_eq_set_biquads(audio_eq_t eq, const audio_eq_biquad_t *biquads, size_t num_stages);
+
+esp_err_t audio_eq_set_enabled(audio_eq_t eq, bool enabled);
+bool      audio_eq_is_enabled(audio_eq_t eq);
+
+/* Reconfigure for a new sample rate / channel count. Resets state. */
+esp_err_t audio_eq_reconfig(audio_eq_t eq, uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample);
+
+/* In-place processing of `bytes` of interleaved PCM samples. No-op when disabled. */
+esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes);
+
+/* RBJ cookbook designers — f0 in Hz, gain_db only used for peaking/shelf. */
+audio_eq_biquad_t audio_eq_design_peaking   (uint32_t fs, float f0, float q, float gain_db);
+audio_eq_biquad_t audio_eq_design_low_shelf (uint32_t fs, float f0, float q, float gain_db);
+audio_eq_biquad_t audio_eq_design_high_shelf(uint32_t fs, float f0, float q, float gain_db);
+audio_eq_biquad_t audio_eq_design_lowpass   (uint32_t fs, float f0, float q);
+audio_eq_biquad_t audio_eq_design_highpass  (uint32_t fs, float f0, float q);
+
+#ifdef __cplusplus
+}
+#endif

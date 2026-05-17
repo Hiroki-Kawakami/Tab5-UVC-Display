@@ -5,6 +5,7 @@
 
 #pragma once
 #include "bsp_common.h"
+#include "audio_eq.h"
 #include "esp_lcd_touch.h"
 
 #ifdef __cplusplus
@@ -33,6 +34,12 @@ typedef struct {
         uint32_t sample_rate;    /*!< 0 -> 48000 */
         uint8_t bits_per_sample; /*!< 0 -> 16 */
         uint8_t channels;        /*!< 0 -> 2 */
+        struct {
+            bool enable;                          /*!< Enable EQ at boot */
+            size_t num_stages;                    /*!< Number of biquads in `biquads` */
+            const audio_eq_biquad_t *biquads;     /*!< Initial coefficients (copied) */
+            size_t max_stages;                    /*!< Capacity; 0 -> max(num_stages, 8) */
+        } eq;
     } audio;
 } bsp_tab5_config_t;
 
@@ -47,10 +54,17 @@ void bsp_tab5_touch_wait_interrupt(void);
 esp_err_t bsp_tab5_audio_open(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
 esp_err_t bsp_tab5_audio_close(void);
 esp_err_t bsp_tab5_audio_reconfig(uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
-esp_err_t bsp_tab5_audio_write(const void *data, size_t len);
+/* When EQ is enabled, `data` is filtered in-place — caller must own the buffer. */
+esp_err_t bsp_tab5_audio_write(void *data, size_t len);
 esp_err_t bsp_tab5_audio_set_volume(int volume);   /*!< 0..100, 0 mutes */
 esp_err_t bsp_tab5_audio_set_mute(bool mute);
 int       bsp_tab5_audio_get_volume(void);
+
+/* Speaker EQ — applied in-place inside bsp_tab5_audio_write. */
+esp_err_t bsp_tab5_audio_eq_set_enabled(bool enabled);
+bool      bsp_tab5_audio_eq_is_enabled(void);
+esp_err_t bsp_tab5_audio_eq_set_biquads(const audio_eq_biquad_t *biquads, size_t num_stages);
+audio_eq_t bsp_tab5_audio_eq_handle(void);  /*!< NULL if EQ was not initialised */
 
 #ifdef __cplusplus
 }

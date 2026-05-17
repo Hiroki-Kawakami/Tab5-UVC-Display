@@ -279,7 +279,8 @@ void PreviewScreen::onEnter() {
 }
 
 void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
-    bsp_tab5_audio_write(data, len);
+    // EQ runs in-place; the UAC consumer's resampler output buffer is mutable.
+    bsp_tab5_audio_write(const_cast<uint8_t *>(data), len);
 }
 
 void PreviewScreen::onEvent(const uvc_host_stream_event_data_t *event) {
