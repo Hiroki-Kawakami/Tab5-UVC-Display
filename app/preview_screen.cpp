@@ -232,7 +232,7 @@ void PreviewScreen::build() {
 
     volume_slider_ = lv_slider_create(root_);
     lv_obj_set_width(volume_slider_, LV_PCT(100));
-    lv_slider_set_range(volume_slider_, 1, 100);
+    lv_slider_set_range(volume_slider_, 0, 100);
     lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
         uint8_t v = (uint8_t)lv_slider_get_value(s);

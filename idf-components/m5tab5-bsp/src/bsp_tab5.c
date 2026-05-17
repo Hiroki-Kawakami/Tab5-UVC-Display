@@ -5,6 +5,7 @@
 
 #include "bsp_private.h"
 #include "bsp_tab5.h"
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -39,6 +40,11 @@ static st7123_lcd_t st7123_lcd;
 static st7123_touch_t st7123_touch;
 static es8388_t es8388;
 static audio_eq_t audio_eq;
+/* User-facing volume tracked here; hardware codec volume stays at max after
+ * boot and audio_eq applies the user value as a software gain (with fade). */
+static int s_user_volume = -1;
+#define BSP_VOLUME_FADE_MS 100
+#define BSP_VOLUME_DB_SPAN 40.0f   /* vol=1 → -40 dB, vol=100 → 0 dB */
 
 #define SPK_EN_PIN  1
 #define HP_DET_PIN  7
@@ -141,14 +147,15 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     }, &pi4ioe1);
     BSP_RETURN_ERR(err);
 
-    // Speaker amp policy — apply once synchronously, then spawn the poller
-    // only when AUTO needs it. Notify-driven so OFF/ON modes idle for free.
+    // Speaker amp policy is captured here but the SPK_EN line stays LOW for
+    // now — we don't enable the amp until *after* the codec is initialised,
+    // unmuted, and feeding stable silence. Enabling the amp earlier causes:
+    //   (1) the amp's own power-on transient, and
+    //   (2) any DC offset / unmute click on the codec's analog output to be
+    //       amplified into the speaker.
+    // Both surface as the audible "ブツッ" at boot. Delaying SPK_EN until the
+    // DAC is settled removes (2) entirely and quietens (1).
     s_speaker_mode = config->audio.speaker_mode;
-    apply_speaker_pin(s_speaker_mode);
-    if (s_speaker_mode == BSP_SPEAKER_MODE_AUTO) {
-        err = start_speaker_task_once();
-        BSP_RETURN_ERR(err);
-    }
 
     // Initialize PI4IOE2 (address 0x44)
     err = pi4io_init(i2c0, 0x44, (pi4io_pin_config_t[8]){
@@ -250,8 +257,28 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "audio_eq_init failed: %d (EQ disabled)", err);
                 audio_eq = NULL;
+            } else {
+                /* Start silent so the codec's unmute / volume jump below is
+                 * masked — there is no signal to click on while gain=0. */
+                audio_eq_set_gain(audio_eq, 0.0f, 0);
+                /* Pin codec to max once; user volume is delivered by the
+                 * software gain (with fade) from now on. SPK_EN is still LOW
+                 * at this point so the unmute click doesn't reach the speaker. */
+                es8388_set_volume(es8388, 100);
             }
         }
+    }
+
+    /* Now that the DAC output is steady silence, give the analog stage a
+     * moment to settle, then enable the speaker amp. The amp's own startup
+     * transient is unavoidable but is now the only remaining click source. */
+    if (es8388) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    apply_speaker_pin(s_speaker_mode);
+    if (s_speaker_mode == BSP_SPEAKER_MODE_AUTO || s_hp_cb) {
+        err = start_speaker_task_once();
+        BSP_RETURN_ERR(err);
     }
 
     if (config->wifi.mode || config->bluetooth.enable) {
@@ -348,13 +375,30 @@ esp_err_t bsp_tab5_audio_reconfig(uint32_t sample_rate, uint8_t bits_per_sample,
 }
 esp_err_t bsp_tab5_audio_write(void *data, size_t len) {
     if (!es8388) return ESP_ERR_INVALID_STATE;
-    if (audio_eq && audio_eq_is_enabled(audio_eq)) {
-        audio_eq_process(audio_eq, data, len);
-    }
+    /* Always go through audio_eq even when biquads are disabled — the gain
+     * fader lives here too and skipping it would bypass the volume control. */
+    if (audio_eq) audio_eq_process(audio_eq, data, len);
     return es8388_write(es8388, data, len);
 }
 esp_err_t bsp_tab5_audio_set_volume(int volume) {
     if (!es8388) return ESP_ERR_INVALID_STATE;
+    if (volume < 0)   volume = 0;
+    if (volume > 100) volume = 100;
+    if (volume == s_user_volume) return ESP_OK;  /* drop slider duplicates */
+    s_user_volume = volume;
+    if (audio_eq) {
+        /* Linear-in-dB curve: vol=100 → 0 dB (gain 1.0), vol=1 → -40 dB.
+         * vol=0 is a hard zero so muting via volume=0 is true silence. */
+        float gain;
+        if (volume == 0) {
+            gain = 0.0f;
+        } else {
+            float db = (volume - 100) * (BSP_VOLUME_DB_SPAN / 100.0f);
+            gain = powf(10.0f, db / 20.0f);
+        }
+        return audio_eq_set_gain(audio_eq, gain, BSP_VOLUME_FADE_MS);
+    }
+    /* No EQ instance → fall back to direct hardware volume (clicky). */
     return es8388_set_volume(es8388, volume);
 }
 esp_err_t bsp_tab5_audio_set_mute(bool mute) {
@@ -362,6 +406,7 @@ esp_err_t bsp_tab5_audio_set_mute(bool mute) {
     return es8388_set_mute(es8388, mute);
 }
 int bsp_tab5_audio_get_volume(void) {
+    if (s_user_volume >= 0) return s_user_volume;
     return es8388 ? es8388_get_volume(es8388) : -1;
 }
 

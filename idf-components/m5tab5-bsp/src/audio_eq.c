@@ -30,6 +30,12 @@ struct audio_eq_state {
     audio_eq_biquad_t *biquads;        /* [max_stages] */
     biquad_state_t    *states;         /* [max_stages * channels] */
     bool enabled;
+    /* Software gain with per-sample fade. Applied AFTER biquads so changing
+     * the gain doesn't disturb the filter memory. */
+    float    current_gain;             /* per-frame interpolation cursor */
+    float    target_gain;
+    float    gain_step;                /* per-frame delta toward target */
+    uint32_t fade_remaining;           /* frames left to step */
 };
 
 static inline float biquad_step(const audio_eq_biquad_t *b, biquad_state_t *s, float x) {
@@ -75,6 +81,10 @@ esp_err_t audio_eq_init(const audio_eq_config_t *config, audio_eq_t *out_eq) {
     eq->max_stages      = max_stages;
     eq->num_stages      = initial_n;
     eq->enabled         = config->enabled;
+    eq->current_gain    = 1.0f;
+    eq->target_gain     = 1.0f;
+    eq->gain_step       = 0.0f;
+    eq->fade_remaining  = 0;
     if (initial_n) memcpy(eq->biquads, config->initial_biquads, initial_n * sizeof(audio_eq_biquad_t));
 
     *out_eq = eq;
@@ -142,34 +152,110 @@ esp_err_t audio_eq_reconfig(audio_eq_t eq, uint32_t sample_rate, uint8_t channel
 
 esp_err_t audio_eq_process(audio_eq_t eq, void *data, size_t bytes) {
     if (!eq || !data) return ESP_ERR_INVALID_ARG;
-    if (!eq->enabled || !eq->num_stages) return ESP_OK;
 
-    const size_t frame_bytes = sizeof(int16_t) * eq->channels;
+    /* Snapshot {biquads, gain} under a short lock, then process the buffer
+     * lock-free. Holding the mutex across the full per-sample loop starves
+     * concurrent set_gain / set_biquads callers (UI thread) and was observed
+     * to stall higher-priority work on the same core. Biquad states are only
+     * touched by this function (single consumer), so they're safe to read /
+     * write outside the lock. */
+    audio_eq_biquad_t local_biquads[EQ_DEFAULT_MAX_STAGES > 0 ? EQ_DEFAULT_MAX_STAGES : 1];
+    audio_eq_biquad_t *biquads_ptr;
+    size_t   n_stages;
+    uint8_t  channels;
+    bool     do_biquads;
+    float    current_gain, target_gain, gain_step;
+    uint32_t fade_remaining;
+    biquad_state_t *states;
+
+    xSemaphoreTake(eq->mutex, portMAX_DELAY);
+    n_stages       = eq->num_stages;
+    channels       = eq->channels;
+    do_biquads     = eq->enabled && n_stages > 0;
+    current_gain   = eq->current_gain;
+    target_gain    = eq->target_gain;
+    gain_step      = eq->gain_step;
+    fade_remaining = eq->fade_remaining;
+    states         = eq->states;
+    /* Cheap to copy: up to EQ_DEFAULT_MAX_STAGES * 5 floats = 160 bytes. For
+     * larger configs we fall back to a direct pointer (process and updates to
+     * biquads coexist via the mutex, so set_biquads cannot race here while we
+     * hold it — once released, set_biquads may rewrite but states are reset
+     * at the same time). */
+    if (n_stages <= EQ_DEFAULT_MAX_STAGES) {
+        if (n_stages) memcpy(local_biquads, eq->biquads, n_stages * sizeof(audio_eq_biquad_t));
+        biquads_ptr = local_biquads;
+    } else {
+        biquads_ptr = eq->biquads;
+    }
+    xSemaphoreGive(eq->mutex);
+
+    const bool apply_gain = (current_gain != 1.0f) || (target_gain != 1.0f) || (fade_remaining > 0);
+    if (!do_biquads && !apply_gain) return ESP_OK;
+
+    const size_t frame_bytes = sizeof(int16_t) * channels;
     if (bytes % frame_bytes) return ESP_ERR_INVALID_SIZE;
     const size_t frames = bytes / frame_bytes;
 
-    xSemaphoreTake(eq->mutex, portMAX_DELAY);
-
-    const size_t n_stages = eq->num_stages;
-    const uint8_t channels = eq->channels;
-    const audio_eq_biquad_t *biquads = eq->biquads;
-    biquad_state_t *states = eq->states;
-
     int16_t *p = (int16_t *)data;
     for (size_t f = 0; f < frames; f++) {
+        /* Per-frame gain step (same multiplier for L+R so stereo image holds). */
+        if (fade_remaining > 0) {
+            current_gain += gain_step;
+            if (--fade_remaining == 0) current_gain = target_gain;
+        }
+        const float g = current_gain;
+
         for (uint8_t ch = 0; ch < channels; ch++) {
             float x = (float)p[f * channels + ch];
-            for (size_t s = 0; s < n_stages; s++) {
-                x = biquad_step(&biquads[s], &states[s * channels + ch], x);
+            if (do_biquads) {
+                for (size_t s = 0; s < n_stages; s++) {
+                    x = biquad_step(&biquads_ptr[s], &states[s * channels + ch], x);
+                }
             }
+            x *= g;
             if (x >  32767.0f) x =  32767.0f;
             if (x < -32768.0f) x = -32768.0f;
             p[f * channels + ch] = (int16_t)lrintf(x);
         }
     }
 
+    /* Publish the advanced gain cursor back so the next buffer continues the
+     * fade. set_gain races are benign: if a new target was set while we were
+     * processing, our writeback below is conditional so we don't overwrite it. */
+    xSemaphoreTake(eq->mutex, portMAX_DELAY);
+    /* Only update if no one else changed the fade meanwhile. */
+    if (eq->target_gain == target_gain) {
+        eq->current_gain   = current_gain;
+        eq->fade_remaining = fade_remaining;
+    }
     xSemaphoreGive(eq->mutex);
     return ESP_OK;
+}
+
+esp_err_t audio_eq_set_gain(audio_eq_t eq, float target_gain, uint32_t fade_ms) {
+    if (!eq) return ESP_ERR_INVALID_ARG;
+    if (target_gain < 0.0f) target_gain = 0.0f;
+    if (target_gain > 1.0f) target_gain = 1.0f;
+
+    xSemaphoreTake(eq->mutex, portMAX_DELAY);
+    eq->target_gain = target_gain;
+    if (fade_ms == 0 || target_gain == eq->current_gain) {
+        eq->current_gain   = target_gain;
+        eq->fade_remaining = 0;
+        eq->gain_step      = 0.0f;
+    } else {
+        uint32_t frames = (uint32_t)(((uint64_t)eq->sample_rate * fade_ms + 500) / 1000);
+        if (frames == 0) frames = 1;
+        eq->fade_remaining = frames;
+        eq->gain_step      = (target_gain - eq->current_gain) / (float)frames;
+    }
+    xSemaphoreGive(eq->mutex);
+    return ESP_OK;
+}
+
+float audio_eq_get_gain(audio_eq_t eq) {
+    return eq ? eq->target_gain : 0.0f;
 }
 
 /* ---------------- RBJ Cookbook designers ---------------- */
