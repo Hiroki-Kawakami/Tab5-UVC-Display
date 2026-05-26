@@ -90,7 +90,16 @@ void save_setting(const char *key, uint8_t value) {
     }
 }
 
+ppa_srm_color_mode_t to_ppa_color_mode(pf_port::PixelFormat pf) {
+    switch (pf) {
+        case pf_port::PixelFormat::RGB565: return PPA_SRM_COLOR_MODE_RGB565;
+        case pf_port::PixelFormat::RGB888: return PPA_SRM_COLOR_MODE_RGB888;
+    }
+    return PPA_SRM_COLOR_MODE_RGB888;
+}
+
 void renderer_task(void *) {
+    const size_t fb_bpp = pf_port::bytes_per_pixel(pf_port::display_pixel_format());
     int fb_index = 0;
     int frame_count = 0;
     int64_t fps_start = esp_timer_get_time();
@@ -150,8 +159,8 @@ void renderer_task(void *) {
             // camera. When streaming, carry the previous fb's UVC band
             // forward (covers brief stalls). When disconnected, zero the
             // UVC band so the last frozen frame doesn't stay on screen.
-            size_t uvc_off  = (size_t)GUI_PANEL_H * DISP_W * 3;
-            size_t uvc_size = (size_t)(DISP_H - GUI_PANEL_H) * DISP_W * 3;
+            size_t uvc_off  = (size_t)GUI_PANEL_H * DISP_W * fb_bpp;
+            size_t uvc_size = (size_t)(DISP_H - GUI_PANEL_H) * DISP_W * fb_bpp;
             if (uvc_streaming) {
                 void *cur_fb = pf_port::display_get_frame_buffer(fb_index);
                 memcpy((uint8_t*)out_fb + uvc_off, (uint8_t*)cur_fb + uvc_off, uvc_size);
@@ -166,7 +175,7 @@ void renderer_task(void *) {
         } else if (dirty_fbs > 0) {
             // No UVC, no GUI — drain stale frames so the screen actually
             // goes black instead of holding the last UVC frame frozen.
-            memset(out_fb, 0, (size_t)DISP_W * DISP_H * 3);
+            memset(out_fb, 0, (size_t)DISP_W * DISP_H * fb_bpp);
             flush_next = true;
             dirty_fbs--;
         }
@@ -304,7 +313,7 @@ void PreviewScreen::onEnter() {
     pcfg.input_color_mode = PPA_SRM_COLOR_MODE_RGB888;
     pcfg.out_pic_w = DISP_W;
     pcfg.out_pic_h = DISP_H;
-    pcfg.out_color_mode = PPA_SRM_COLOR_MODE_RGB888;
+    pcfg.out_color_mode = to_ppa_color_mode(pf_port::display_pixel_format());
     pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
     pcfg.scale_x = 1.0f;
     pcfg.scale_y = 1.0f;

@@ -9,10 +9,19 @@ static const char *TAG = "main";
 
 namespace pf_port {
 
+static PixelFormat s_pixel_format = PixelFormat::RGB888;
+
+PixelFormat display_pixel_format() {
+    return s_pixel_format;
+}
+
 void init(int fb_num, PixelFormat pixel_format) {
+    s_pixel_format = pixel_format;
     bsp_tab5_config_t bsp_config = {};
     bsp_config.display.fb_num = fb_num;
-    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB888;
+    bsp_config.display.pixel_format = (pixel_format == PixelFormat::RGB888)
+        ? BSP_PIXEL_FORMAT_RGB888
+        : BSP_PIXEL_FORMAT_RGB565;
     bsp_config.usb.usb5v_en = true;
     bsp_config.audio.eq.enable     = true;
     bsp_config.audio.eq.max_stages = 8;

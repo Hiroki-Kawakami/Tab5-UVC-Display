@@ -38,7 +38,7 @@ static void lvgl_setup() {
     gui_fb = (uint16_t*)pf_port::psram_malloc(GUI_WIDTH * GUI_HEIGHT * 2);
     gui_srm = new pf_port::SRMClient();
     gui_srm->setInputBlock(GUI_WIDTH, GUI_HEIGHT, GUI_WIDTH, GUI_HEIGHT, 0, 0, pf_port::PixelFormat::RGB565);
-    gui_srm->setOutputBlock(720, 1280, 0, 0, pf_port::PixelFormat::RGB888);
+    gui_srm->setOutputBlock(720, 1280, 0, 0, pf_port::display_pixel_format());
     gui_srm->setRotation(90);
     gui_srm->setScale(GUI_SCALE, GUI_SCALE);
 
@@ -102,7 +102,7 @@ static void lvgl_setup() {
 
 void uvc_display_app() {
     NVS::init();
-    pf_port::init(3, pf_port::PixelFormat::RGB565);
+    pf_port::init(3, pf_port::PixelFormat::RGB888);
     lvgl_setup();
     lv_async_call([](){
         screen_manager.push(std::make_unique<PreviewScreen>());
