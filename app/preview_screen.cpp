@@ -70,8 +70,8 @@ const audio_eq_biquad_t *speaker_eq_stages(size_t *n) {
 const audio_eq_biquad_t *headphone_eq_stages(size_t *n) {
     static const audio_eq_biquad_t stages[] = {
         audio_eq_design_highpass (kEqFs,   50.0f, 0.707f),
-        audio_eq_design_low_shelf(kEqFs,  150.0f, 0.707f, +11.0f),
-        audio_eq_design_peaking  (kEqFs, 1000.0f, 0.80f,  -5.0f),
+        audio_eq_design_low_shelf(kEqFs,  150.0f, 0.707f, +10.0f),
+        audio_eq_design_peaking  (kEqFs, 1000.0f, 0.80f,  -4.0f),
         audio_eq_design_peaking  (kEqFs, 2500.0f, 1.00f,  -3.0f),
     };
     *n = sizeof(stages) / sizeof(stages[0]);
