@@ -401,16 +401,12 @@ void PreviewScreen::onEnter() {
     uac.install();
     uac.setCallback(this);
 
-    // Uniform fit-to-display scale. After ANGLE_90, the input's pic_h column
-    // maps to the output's width and pic_w row maps to the output's height.
-    // Take the smaller of the two ratios so the entire frame stays inside
-    // DISP_W × DISP_H; for non-16:9 inputs the unused FB rows stay black
-    // (framebuffers are zero-initialised, and the renderer's no-frame paths
-    // either repaint the band or zero it).
-    float scale_w = (float)DISP_W / (float)stream_h_;
-    float scale_h = (float)DISP_H / (float)stream_w_;
-    float scale = scale_w < scale_h ? scale_w : scale_h;
-
+    // Stretch-to-fill. After ANGLE_90, the input's pic_h column maps to the
+    // output's width (driven by scale_y) and the pic_w row maps to the
+    // output's height (driven by scale_x). Scaling each axis independently
+    // fills the full DISP_W × DISP_H without preserving aspect ratio, so
+    // sub-1280×720 sources stretch to the panel instead of letterboxing.
+    // 1280×720 → both scales == 1.0, behaviour is unchanged.
     jpeg_ppa::Config pcfg{};
     pcfg.pic_w = stream_w_;
     pcfg.pic_h = stream_h_;
@@ -421,8 +417,8 @@ void PreviewScreen::onEnter() {
     pcfg.out_pic_h = DISP_H;
     pcfg.out_color_mode = to_ppa_color_mode(pf_port::display_pixel_format());
     pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
-    pcfg.scale_x = scale;
-    pcfg.scale_y = scale;
+    pcfg.scale_x = (float)DISP_H / (float)stream_w_;
+    pcfg.scale_y = (float)DISP_W / (float)stream_h_;
     pcfg.yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 
     pipeline = new jpeg_ppa::Pipeline();
