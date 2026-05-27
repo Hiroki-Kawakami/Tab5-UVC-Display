@@ -48,6 +48,7 @@ NVS settings_nvs("preview");
 constexpr const char *NVS_KEY_VOLUME     = "vol";      // speaker (HP unplugged)
 constexpr const char *NVS_KEY_HP_VOLUME  = "hp_vol";   // headphones (HP plugged in)
 constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
+constexpr const char *NVS_KEY_PIX_FMT    = "pixfmt";   // 0=RGB888, 1=RGB565
 
 // EQ presets. Both target the 3.5mm line-out measurement (rising AC-coupling
 // HPF shape, peak near 12 kHz). For now Speaker and Headphone share the same
@@ -278,6 +279,25 @@ void PreviewScreen::build() {
     lv_obj_add_event_fn(brightness_slider_, LV_EVENT_RELEASED, [](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
         save_setting(NVS_KEY_BRIGHTNESS, (uint8_t)lv_slider_get_value(s));
+    });
+
+    auto pf_lbl = lv_label_create(root_);
+    lv_label_set_text(pf_lbl, "Optimize For");
+    lv_obj_set_width(pf_lbl, LV_PCT(100));
+    lv_obj_set_style_margin_top(pf_lbl, 20, 0);
+
+    auto pf_dd = lv_dropdown_create(root_);
+    lv_obj_set_width(pf_dd, LV_PCT(100));
+    lv_dropdown_set_options_static(pf_dd, "Image Quality\nFramerate");
+    lv_dropdown_set_selected(pf_dd,
+        pf_port::display_pixel_format() == pf_port::PixelFormat::RGB565 ? 1 : 0);
+    // The pixel format is fixed by pf_port::init at boot — switching it
+    // requires re-allocating framebuffers and re-configuring PPA/JPEG. Save
+    // and reboot rather than try to tear the pipeline down at runtime.
+    lv_obj_add_event_fn(pf_dd, LV_EVENT_VALUE_CHANGED, [](lv_event_t *e){
+        auto d = (lv_obj_t*)lv_event_get_target(e);
+        save_setting(NVS_KEY_PIX_FMT, (uint8_t)lv_dropdown_get_selected(d));
+        bsp_tab5_restart();
     });
 
     apply_active_volume();

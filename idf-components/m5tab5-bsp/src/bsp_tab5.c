@@ -19,6 +19,7 @@
 #include "es8388/es8388.h"
 #include "audio_eq.h"
 #include "nvs_flash.h"
+#include "esp_system.h"
 #include "esp_hosted.h"
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
 #include "esp_hosted_bt.h"
@@ -330,6 +331,23 @@ esp_err_t bsp_tab5_init(const bsp_tab5_config_t *config) {
     }
 
     return ESP_OK;
+}
+
+void bsp_tab5_restart(void) {
+    /* Codec runs pinned at vol=100 (SW gain delivers the user volume), so
+     * cutting the analog output through the codec's own mute register is the
+     * direct way to silence the DAC before the I2S clocks die. */
+    if (es8388) es8388_set_mute(es8388, true);
+    /* Drop SPK_EN directly rather than going through set_speaker_mode — the
+     * speaker_task may not get scheduled before esp_restart cuts everything,
+     * and the pi4io I2C write is what we actually need to land. */
+    if (pi4ioe1) pi4io_set_output(pi4ioe1, SPK_EN_PIN, false);
+    /* Black out the panel so the brief reset window doesn't flash whatever
+     * happens to be in the framebuffer. */
+    bsp_tab5_display_set_brightness(0);
+    /* Let the I2C writes complete and the DAC analog stage settle. */
+    vTaskDelay(pdMS_TO_TICKS(50));
+    esp_restart();
 }
 
 // MARK: Display

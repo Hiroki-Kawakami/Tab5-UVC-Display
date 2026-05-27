@@ -102,7 +102,18 @@ static void lvgl_setup() {
 
 void uvc_display_app() {
     NVS::init();
-    pf_port::init(3, pf_port::PixelFormat::RGB888);
+    // Pixel format is user-selectable from the PreviewScreen UI ("Optimize For:
+    // Image Quality" = RGB888, "Framerate" = RGB565). A change triggers a save
+    // + esp_restart, so reading here is sufficient.
+    pf_port::PixelFormat pf = pf_port::PixelFormat::RGB888;
+    {
+        NVS nvs("preview");
+        uint8_t v = 0;
+        if (nvs.get("pixfmt", &v) == NVS::Error::OK && v == 1) {
+            pf = pf_port::PixelFormat::RGB565;
+        }
+    }
+    pf_port::init(3, pf);
     lvgl_setup();
     lv_async_call([](){
         screen_manager.push(std::make_unique<PreviewScreen>());
