@@ -26,7 +26,7 @@ void init(int fb_num, PixelFormat pixel_format) {
     bsp_config.audio.eq.enable     = true;
     bsp_config.audio.eq.max_stages = 8;
     bsp_config.audio.speaker_mode = BSP_SPEAKER_MODE_AUTO;
-    bsp_tab5_init(&bsp_config);
+    ESP_ERROR_CHECK(bsp_tab5_init(&bsp_config));
     // EQ coefficients themselves are owned by PreviewScreen (speaker vs HP
     // presets, swapped by the HP-detect callback).
 
