@@ -32,8 +32,23 @@ public:
     void setCallback(Callback *callback) { callback_ = callback; }
 
 private:
+    void onDeviceConnected(const uvc_host_driver_event_data_t *event);
+    // Find the (width, height, format) entry in the cached frame list and
+    // pick the dwFrameInterval whose 1e7/iv is closest to requested_fps,
+    // returning that snapped fps. Returns false if no matching frame
+    // descriptor exists, in which case the caller should pass the user's
+    // value through unchanged (the driver will then surface NOT_FOUND).
+    bool snapFps(int width, int height, enum uvc_host_stream_format format,
+                 float requested_fps, float *snapped_fps_out) const;
+
     Callback *callback_{nullptr};
     uvc_host_stream_hdl_t stream_{nullptr};
+
+    // Captured at DEVICE_CONNECTED so open() can snap a user-requested fps
+    // to a value the driver's float-tolerance match will accept.
+    mutable SemaphoreHandle_t frames_mutex_{nullptr};
+    uvc_host_frame_info_t *frames_{nullptr};
+    size_t frames_count_{0};
 };
 
 class UAC {

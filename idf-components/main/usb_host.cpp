@@ -5,11 +5,61 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include <cmath>
 #include <cstring>
 
 static const char *TAG = "usb_host";
 
 namespace usb_host {
+
+namespace {
+
+const char *uvcFormatName(enum uvc_host_stream_format fmt) {
+    switch (fmt) {
+    case UVC_VS_FORMAT_MJPEG: return "MJPEG";
+    case UVC_VS_FORMAT_YUY2:  return "YUY2";
+    case UVC_VS_FORMAT_H264:  return "H264";
+    case UVC_VS_FORMAT_H265:  return "H265";
+    case UVC_VS_FORMAT_UNDEFINED:
+    default:                  return "UNDEF";
+    }
+}
+
+// UVC frame interval is in 100ns units → fps = 1e7 / interval.
+float intervalToFps(uint32_t interval_100ns) {
+    return interval_100ns ? 1.0e7f / static_cast<float>(interval_100ns) : 0.0f;
+}
+
+void logFrameEntry(size_t i, const uvc_host_frame_info_t &fi) {
+    char buf[192];
+    int len = 0;
+    if (fi.interval_type == 0) {
+        // Continuous: interval_min = smallest interval = max fps.
+        len = snprintf(buf, sizeof(buf),
+                       "continuous interval %lu..%lu (step %lu) -> %.4f..%.4f fps",
+                       (unsigned long)fi.interval_min,
+                       (unsigned long)fi.interval_max,
+                       (unsigned long)fi.interval_step,
+                       intervalToFps(fi.interval_max),
+                       intervalToFps(fi.interval_min));
+    } else {
+        int n = fi.interval_type;
+        if (n > CONFIG_UVC_INTERVAL_ARRAY_SIZE) n = CONFIG_UVC_INTERVAL_ARRAY_SIZE;
+        len = snprintf(buf, sizeof(buf), "discrete:");
+        for (int j = 0; j < n && len > 0 && len < (int)sizeof(buf); j++) {
+            len += snprintf(buf + len, sizeof(buf) - len, " %lu(%.4ffps)",
+                            (unsigned long)fi.interval[j],
+                            intervalToFps(fi.interval[j]));
+        }
+    }
+    ESP_LOGI(TAG, "    [%2u] %-5s %4ux%-4u  default %lu(%.4ffps)  %s",
+             (unsigned)i, uvcFormatName(fi.format),
+             fi.h_res, fi.v_res,
+             (unsigned long)fi.default_interval,
+             intervalToFps(fi.default_interval), buf);
+}
+
+}  // namespace
 
 void install() {
     usb_host_config_t config = {};
@@ -31,17 +81,18 @@ void install() {
 }
 
 void UVC::install() {
+    frames_mutex_ = xSemaphoreCreateMutex();
     uvc_host_driver_config_t config = {};
     config.driver_task_stack_size = 6 * 1024;
     config.driver_task_priority = 6;
     config.xCoreID = 0;
     config.create_background_task = true;
     config.event_cb = [](const uvc_host_driver_event_data_t *event, void *user_ctx){
+        auto *self = static_cast<UVC*>(user_ctx);
         switch (event->type) {
-        case UVC_HOST_DRIVER_EVENT_DEVICE_CONNECTED: {
-            ESP_LOGI(TAG, "Device connected, addr: %d, stream index: %d", event->device_connected.dev_addr, event->device_connected.uvc_stream_index);
+        case UVC_HOST_DRIVER_EVENT_DEVICE_CONNECTED:
+            self->onDeviceConnected(event);
             break;
-        }
         default:
             break;
         }
@@ -49,6 +100,96 @@ void UVC::install() {
     config.user_ctx = this;
     ESP_ERROR_CHECK(uvc_host_install(&config));
     ESP_LOGI(TAG, "UVC host driver installed");
+}
+
+void UVC::onDeviceConnected(const uvc_host_driver_event_data_t *event) {
+    const uint8_t  dev_addr     = event->device_connected.dev_addr;
+    const uint8_t  stream_index = event->device_connected.uvc_stream_index;
+    const size_t   num_frames   = event->device_connected.frame_info_num;
+    ESP_LOGI(TAG, "Device connected, addr: %d, stream index: %d, frames: %u",
+             dev_addr, stream_index, (unsigned)num_frames);
+
+    // Fetch the frame descriptor list and cache it under the mutex so open()
+    // can snap user-requested fps to a descriptor-exact value.
+    uvc_host_frame_info_t *list = nullptr;
+    size_t list_size = 0;
+    if (num_frames > 0) {
+        list = static_cast<uvc_host_frame_info_t*>(
+            heap_caps_calloc(num_frames, sizeof(uvc_host_frame_info_t), MALLOC_CAP_DEFAULT));
+        if (!list) {
+            ESP_LOGW(TAG, "  frame list alloc failed (%u entries)", (unsigned)num_frames);
+        } else {
+            list_size = num_frames;
+            esp_err_t err = uvc_host_get_frame_list(
+                dev_addr, stream_index,
+                reinterpret_cast<uvc_host_frame_info_t(*)[]>(list), &list_size);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "  uvc_host_get_frame_list failed: %s", esp_err_to_name(err));
+                heap_caps_free(list);
+                list = nullptr;
+                list_size = 0;
+            }
+        }
+    }
+
+    if (list && list_size > 0) {
+        ESP_LOGI(TAG, "  Supported formats (%u):", (unsigned)list_size);
+        for (size_t i = 0; i < list_size; i++) {
+            logFrameEntry(i, list[i]);
+        }
+    } else {
+        ESP_LOGI(TAG, "  (no frame descriptors)");
+    }
+
+    xSemaphoreTake(frames_mutex_, portMAX_DELAY);
+    if (frames_) heap_caps_free(frames_);
+    frames_       = list;
+    frames_count_ = list_size;
+    xSemaphoreGive(frames_mutex_);
+}
+
+bool UVC::snapFps(int width, int height, enum uvc_host_stream_format format,
+                  float requested_fps, float *snapped_fps_out) const {
+    if (!frames_mutex_) return false;
+    bool found = false;
+    float best_diff = 0.0f;
+    float best_fps  = requested_fps;
+    xSemaphoreTake(frames_mutex_, portMAX_DELAY);
+    for (size_t i = 0; i < frames_count_; i++) {
+        const auto &fi = frames_[i];
+        if (fi.format != format) continue;
+        if ((int)fi.h_res != width || (int)fi.v_res != height) continue;
+        auto consider = [&](uint32_t iv) {
+            if (iv == 0) return;
+            float fps = 1.0e7f / static_cast<float>(iv);
+            float d = fabsf(fps - requested_fps);
+            if (!found || d < best_diff) {
+                best_diff = d;
+                best_fps  = fps;
+                found     = true;
+            }
+        };
+        if (fi.interval_type == 0) {
+            // Continuous range — iterate stepwise.
+            if (fi.interval_step == 0) {
+                consider(fi.interval_min);
+                consider(fi.interval_max);
+            } else {
+                for (uint32_t iv = fi.interval_min;
+                     iv <= fi.interval_max;
+                     iv += fi.interval_step) {
+                    consider(iv);
+                }
+            }
+        } else {
+            int n = fi.interval_type;
+            if (n > CONFIG_UVC_INTERVAL_ARRAY_SIZE) n = CONFIG_UVC_INTERVAL_ARRAY_SIZE;
+            for (int j = 0; j < n; j++) consider(fi.interval[j]);
+        }
+    }
+    xSemaphoreGive(frames_mutex_);
+    if (found && snapped_fps_out) *snapped_fps_out = best_fps;
+    return found;
 }
 
 esp_err_t UVC::open(int width, int height, float fps) {
@@ -75,8 +216,20 @@ esp_err_t UVC::open(int width, int height, float fps) {
     config.user_ctx = this;
     config.vs_format.h_res = width;
     config.vs_format.v_res = height;
-    config.vs_format.fps = fps;
     config.vs_format.format = UVC_VS_FORMAT_MJPEG;
+    // The driver matches fps against (1e7f / dwFrameInterval) with a 1e-4
+    // float tolerance, which is tighter than the integer-rounding error in
+    // most descriptors (e.g. dwFrameInterval=166666 → 60.00024 fps, off by
+    // 2.4e-4 from 60.0). Snap to the descriptor's exact value so the match
+    // succeeds. Falls through unchanged if the cache is empty or no
+    // (w, h, format) entry exists — open() will then surface NOT_FOUND.
+    float snapped_fps = fps;
+    if (snapFps(width, height, UVC_VS_FORMAT_MJPEG, fps, &snapped_fps)
+        && snapped_fps != fps) {
+        ESP_LOGI(TAG, "Snapping fps %.4f -> %.4f for %dx%d MJPEG",
+                 fps, snapped_fps, width, height);
+    }
+    config.vs_format.fps = snapped_fps;
     config.advanced.number_of_frame_buffers = 4;
     config.advanced.frame_size = 2048 * 1024;
     config.advanced.frame_heap_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED;
