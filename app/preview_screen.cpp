@@ -16,8 +16,6 @@ static const char *TAG = "preview";
 
 namespace {
 
-constexpr int STREAM_W = 1280;
-constexpr int STREAM_H = 720;
 constexpr int DISP_W = 720;
 constexpr int DISP_H = 1280;
 
@@ -49,6 +47,9 @@ constexpr const char *NVS_KEY_VOLUME     = "vol";      // speaker (HP unplugged)
 constexpr const char *NVS_KEY_HP_VOLUME  = "hp_vol";   // headphones (HP plugged in)
 constexpr const char *NVS_KEY_BRIGHTNESS = "brt";
 constexpr const char *NVS_KEY_PIX_FMT    = "pixfmt";   // 0=RGB888, 1=RGB565
+constexpr const char *NVS_KEY_RES_W      = "res_w";    // uint16 px (UVC width)
+constexpr const char *NVS_KEY_RES_H      = "res_h";    // uint16 px (UVC height)
+constexpr const char *NVS_KEY_FPS        = "fps";      // uint8 frames/sec
 
 // EQ presets. Both target the 3.5mm line-out measurement (rising AC-coupling
 // HPF shape, peak near 12 kHz). For now Speaker and Headphone share the same
@@ -243,6 +244,21 @@ void PreviewScreen::build() {
     hp_volume_      = load_setting(NVS_KEY_HP_VOLUME, 40);
     hp_connected_   = bsp_tab5_audio_headphone_inserted();
 
+    // Pull the saved UVC stream parameters (defaults to 1280x720@30 on first
+    // boot / when the value isn't one of the known dropdown entries).
+    {
+        uint16_t w = 0, h = 0;
+        if (settings_nvs.get(NVS_KEY_RES_W, &w) == NVS::Error::OK &&
+            settings_nvs.get(NVS_KEY_RES_H, &h) == NVS::Error::OK) {
+            stream_w_ = w;
+            stream_h_ = h;
+        }
+        uint8_t f = 0;
+        if (settings_nvs.get(NVS_KEY_FPS, &f) == NVS::Error::OK && f > 0) {
+            stream_fps_ = f;
+        }
+    }
+
     volume_label_ = lv_label_create(root_);
     lv_obj_set_width(volume_label_, LV_PCT(100));
     lv_obj_set_style_margin_top(volume_label_, 20, 0);
@@ -279,6 +295,66 @@ void PreviewScreen::build() {
     lv_obj_add_event_fn(brightness_slider_, LV_EVENT_RELEASED, [](lv_event_t *e){
         auto s = (lv_obj_t*)lv_event_get_target(e);
         save_setting(NVS_KEY_BRIGHTNESS, (uint8_t)lv_slider_get_value(s));
+    });
+
+    auto if_lbl = lv_label_create(root_);
+    lv_label_set_text(if_lbl, "Input Format");
+    lv_obj_set_width(if_lbl, LV_PCT(100));
+    lv_obj_set_style_margin_top(if_lbl, 20, 0);
+
+    // Two dropdowns side by side under one heading. Each takes ~half the
+    // row via flex_grow. The container has no styling so it doesn't add a
+    // background card around the dropdowns.
+    auto fmt_row = lv_obj_create(root_);
+    lv_obj_remove_style_all(fmt_row);
+    lv_obj_set_width(fmt_row, LV_PCT(100));
+    lv_obj_set_height(fmt_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(fmt_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(fmt_row, 10, 0);
+
+    res_dd_ = lv_dropdown_create(fmt_row);
+    lv_obj_set_flex_grow(res_dd_, 1);
+    fps_dd_ = lv_dropdown_create(fmt_row);
+    lv_obj_set_flex_grow(fps_dd_, 1);
+
+    // Pre-connect: show the saved values as the sole entry of each dropdown
+    // so the UI reflects what's about to be used. The lists get replaced
+    // with the camera's actual capabilities in onDeviceFormats once the
+    // device enumerates.
+    refresh_format_dropdowns();
+
+    // Pipeline strip buffers, PPA scale, and the UVC stream config are all
+    // fixed by onEnter() at boot. Save + reboot for the new params to take
+    // effect, mirroring the pixel-format dropdown below.
+    lv_obj_add_event_fn(res_dd_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *e){
+        auto d = (lv_obj_t*)lv_event_get_target(e);
+        uint32_t sel = lv_dropdown_get_selected(d);
+        if (sel >= camera_formats_count_) return;  // pre-connect / stale event
+        const auto &cf = camera_formats_[sel];
+        // Preserve the user's preferred fps when possible: pick the entry
+        // of cf.fps[] closest to the currently-saved stream_fps_.
+        uint8_t best_fps = cf.fps[0];
+        int best_diff = 256;
+        for (uint8_t j = 0; j < cf.fps_count; j++) {
+            int diff = (int)cf.fps[j] - (int)stream_fps_;
+            if (diff < 0) diff = -diff;
+            if (diff < best_diff) { best_diff = diff; best_fps = cf.fps[j]; }
+        }
+        settings_nvs.set(NVS_KEY_RES_W, cf.w);
+        settings_nvs.set(NVS_KEY_RES_H, cf.h);
+        settings_nvs.set(NVS_KEY_FPS,   best_fps);
+        settings_nvs.commit();
+        bsp_tab5_restart();
+    });
+    lv_obj_add_event_fn(fps_dd_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *e){
+        auto d = (lv_obj_t*)lv_event_get_target(e);
+        uint32_t sel = lv_dropdown_get_selected(d);
+        int res_idx = find_resolution_idx(stream_w_, stream_h_);
+        if (res_idx < 0) return;  // current res not in camera list (yet)
+        const auto &cf = camera_formats_[res_idx];
+        if (sel >= cf.fps_count) return;
+        save_setting(NVS_KEY_FPS, cf.fps[sel]);
+        bsp_tab5_restart();
     });
 
     auto pf_lbl = lv_label_create(root_);
@@ -325,9 +401,19 @@ void PreviewScreen::onEnter() {
     uac.install();
     uac.setCallback(this);
 
+    // Uniform fit-to-display scale. After ANGLE_90, the input's pic_h column
+    // maps to the output's width and pic_w row maps to the output's height.
+    // Take the smaller of the two ratios so the entire frame stays inside
+    // DISP_W × DISP_H; for non-16:9 inputs the unused FB rows stay black
+    // (framebuffers are zero-initialised, and the renderer's no-frame paths
+    // either repaint the band or zero it).
+    float scale_w = (float)DISP_W / (float)stream_h_;
+    float scale_h = (float)DISP_H / (float)stream_w_;
+    float scale = scale_w < scale_h ? scale_w : scale_h;
+
     jpeg_ppa::Config pcfg{};
-    pcfg.pic_w = STREAM_W;
-    pcfg.pic_h = STREAM_H;
+    pcfg.pic_w = stream_w_;
+    pcfg.pic_h = stream_h_;
     pcfg.strip_h = STRIP_H;
     pcfg.ring_count = RING_COUNT;
     pcfg.input_color_mode = PPA_SRM_COLOR_MODE_RGB888;
@@ -335,8 +421,8 @@ void PreviewScreen::onEnter() {
     pcfg.out_pic_h = DISP_H;
     pcfg.out_color_mode = to_ppa_color_mode(pf_port::display_pixel_format());
     pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
-    pcfg.scale_x = 1.0f;
-    pcfg.scale_y = 1.0f;
+    pcfg.scale_x = scale;
+    pcfg.scale_y = scale;
     pcfg.yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
 
     pipeline = new jpeg_ppa::Pipeline();
@@ -349,7 +435,11 @@ void PreviewScreen::onEnter() {
     // Supervisor: opens the UVC stream, sets up UAC, waits for disconnect,
     // tears both down, and loops forever so the device can be unplugged and
     // re-plugged at runtime.
-    xTaskCreatePinnedToCore([](void*){
+    xTaskCreatePinnedToCore([](void *arg){
+        auto self = static_cast<PreviewScreen*>(arg);
+        const uint16_t open_w   = self->stream_w_;
+        const uint16_t open_h   = self->stream_h_;
+        const uint8_t  open_fps = self->stream_fps_;
         // The MS2109 sometimes corrupts its streaming endpoint during
         // enumeration (manifests as "Enqueue URB error: ESP_ERR_INVALID_STATE"
         // inside uvc_host_stream_start). That error isn't propagated to us, so
@@ -362,7 +452,7 @@ void PreviewScreen::onEnter() {
             // (e.g. a late disconnect that arrived after a forced teardown).
             xSemaphoreTake(uvc_reopen_sem, 0);
 
-            while (uvc.open(STREAM_W, STREAM_H, 30) != ESP_OK) {
+            while (uvc.open(open_w, open_h, open_fps) != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             uvc.start();
@@ -410,7 +500,7 @@ void PreviewScreen::onEnter() {
             uac.close();
             uvc.close();
         }
-    }, "uvc_supervisor", 4096, nullptr, 5, nullptr, 0);
+    }, "uvc_supervisor", 4096, this, 5, nullptr, 0);
 }
 
 void PreviewScreen::onRxData(const uint8_t *data, size_t len) {
@@ -452,4 +542,154 @@ bool PreviewScreen::onFrame(const uvc_host_frame_t *frame) {
         return true;
     }
     return false;
+}
+
+void PreviewScreen::onDeviceFormats(const uvc_host_frame_info_t *frames, size_t count) {
+    // Fires from the UVC driver task; `frames` is only valid during this
+    // call. Snapshot into PSRAM and defer the parse + LVGL update to the
+    // GUI task so the dropdown widgets are touched from their owning thread.
+    if (count == 0) return;
+    auto *copy = new uvc_host_frame_info_t[count];
+    memcpy(copy, frames, count * sizeof(uvc_host_frame_info_t));
+    lv_async_call([this, copy, count](){
+        apply_camera_formats(copy, count);
+        delete[] copy;
+    });
+}
+
+void PreviewScreen::apply_camera_formats(const uvc_host_frame_info_t *frames, size_t count) {
+    camera_formats_count_ = 0;
+    for (size_t i = 0; i < count; i++) {
+        const auto &fi = frames[i];
+        if (fi.format != UVC_VS_FORMAT_MJPEG) continue;  // pipeline only handles MJPEG
+        // Drop anything larger than 1280x720 (by pixel area). The SRAM
+        // strip ring (RING_COUNT * STRIP_H * pic_w * 3 B) is already at
+        // the edge of the MALLOC_CAP_INTERNAL pool at 1280 wide, so
+        // bigger pictures won't fit.
+        if ((uint32_t)fi.h_res * (uint32_t)fi.v_res > 1280u * 720u) continue;
+        // pic_h must divide evenly into STRIP_H or jpeg_strip_decoder_new
+        // rejects the config (e.g. 800x600 → "pic_h 600 not divisible by
+        // strip_h 16"). Drop those entries so the dropdown only offers
+        // resolutions the pipeline can actually accept.
+        if (fi.v_res % STRIP_H != 0) continue;
+
+        // Find-or-insert by (w, h).
+        int idx = -1;
+        for (size_t k = 0; k < camera_formats_count_; k++) {
+            if (camera_formats_[k].w == fi.h_res && camera_formats_[k].h == fi.v_res) {
+                idx = (int)k;
+                break;
+            }
+        }
+        if (idx < 0) {
+            if (camera_formats_count_ >= kMaxFormats) continue;
+            idx = (int)camera_formats_count_++;
+            camera_formats_[idx].w = fi.h_res;
+            camera_formats_[idx].h = fi.v_res;
+            camera_formats_[idx].fps_count = 0;
+        }
+        auto &cf = camera_formats_[idx];
+
+        auto add_fps = [&](uint32_t iv) {
+            if (!iv) return;
+            // UVC intervals are 100ns ticks; round to nearest integer fps.
+            uint32_t fps = (uint32_t)(1e7f / (float)iv + 0.5f);
+            if (fps == 0 || fps > 255) return;
+            for (uint8_t j = 0; j < cf.fps_count; j++) {
+                if (cf.fps[j] == (uint8_t)fps) return;  // dedup
+            }
+            if (cf.fps_count >= kMaxFpsPerRes) return;
+            cf.fps[cf.fps_count++] = (uint8_t)fps;
+        };
+
+        if (fi.interval_type == 0) {
+            // Continuous range — sample at step (or the endpoints).
+            if (fi.interval_step == 0) {
+                add_fps(fi.interval_min);
+                add_fps(fi.interval_max);
+            } else {
+                for (uint32_t iv = fi.interval_min;
+                     iv <= fi.interval_max;
+                     iv += fi.interval_step) {
+                    add_fps(iv);
+                }
+            }
+        } else {
+            int n = fi.interval_type;
+            if (n > CONFIG_UVC_INTERVAL_ARRAY_SIZE) n = CONFIG_UVC_INTERVAL_ARRAY_SIZE;
+            for (int j = 0; j < n; j++) add_fps(fi.interval[j]);
+        }
+    }
+
+    // Sort each entry's fps list descending (insertion sort — fps_count ≤ 8).
+    for (size_t i = 0; i < camera_formats_count_; i++) {
+        auto &cf = camera_formats_[i];
+        for (uint8_t a = 1; a < cf.fps_count; a++) {
+            uint8_t v = cf.fps[a];
+            int b = (int)a - 1;
+            while (b >= 0 && cf.fps[b] < v) {
+                cf.fps[b + 1] = cf.fps[b];
+                b--;
+            }
+            cf.fps[b + 1] = v;
+        }
+    }
+
+    refresh_format_dropdowns();
+}
+
+int PreviewScreen::find_resolution_idx(uint16_t w, uint16_t h) const {
+    for (size_t i = 0; i < camera_formats_count_; i++) {
+        if (camera_formats_[i].w == w && camera_formats_[i].h == h) return (int)i;
+    }
+    return -1;
+}
+
+void PreviewScreen::refresh_format_dropdowns() {
+    if (!res_dd_ || !fps_dd_) return;
+
+    // Resolution dropdown — concat "WxH" entries separated by '\n'. Falls
+    // back to the saved value as a single entry pre-connect.
+    char res_opts[256];
+    int off = 0;
+    if (camera_formats_count_ == 0) {
+        off = snprintf(res_opts, sizeof(res_opts), "%dx%d", stream_w_, stream_h_);
+    } else {
+        for (size_t i = 0; i < camera_formats_count_; i++) {
+            int n = snprintf(res_opts + off, sizeof(res_opts) - off,
+                             "%s%dx%d", (i == 0 ? "" : "\n"),
+                             camera_formats_[i].w, camera_formats_[i].h);
+            if (n < 0 || (size_t)n >= sizeof(res_opts) - (size_t)off) break;
+            off += n;
+        }
+    }
+    lv_dropdown_set_options(res_dd_, res_opts);
+
+    int sel = find_resolution_idx(stream_w_, stream_h_);
+    if (sel < 0) sel = 0;
+    lv_dropdown_set_selected(res_dd_, sel);
+
+    refresh_fps_dropdown(sel);
+}
+
+void PreviewScreen::refresh_fps_dropdown(int res_idx) {
+    if (!fps_dd_) return;
+    char fps_opts[96];
+    int off = 0;
+    int selected = 0;
+    if (res_idx >= 0 && (size_t)res_idx < camera_formats_count_) {
+        const auto &cf = camera_formats_[res_idx];
+        for (uint8_t j = 0; j < cf.fps_count; j++) {
+            int n = snprintf(fps_opts + off, sizeof(fps_opts) - off,
+                             "%s%ufps", (j == 0 ? "" : "\n"), (unsigned)cf.fps[j]);
+            if (n < 0 || (size_t)n >= sizeof(fps_opts) - (size_t)off) break;
+            off += n;
+            if (cf.fps[j] == stream_fps_) selected = j;
+        }
+    }
+    if (off == 0) {
+        off = snprintf(fps_opts, sizeof(fps_opts), "%ufps", (unsigned)stream_fps_);
+    }
+    lv_dropdown_set_options(fps_dd_, fps_opts);
+    lv_dropdown_set_selected(fps_dd_, selected);
 }

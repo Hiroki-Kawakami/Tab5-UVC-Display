@@ -22,6 +22,12 @@ public:
     struct Callback {
         virtual void onEvent(const uvc_host_stream_event_data_t *event) = 0;
         virtual bool onFrame(const uvc_host_frame_t *frame) = 0;
+        // Fired from the UVC driver task right after a newly-connected
+        // device's frame descriptor list has been cached. The buffer is
+        // valid only inside this call — copy what you need. Default no-op
+        // so callers that don't care about format discovery still compile.
+        virtual void onDeviceFormats(const uvc_host_frame_info_t *frames,
+                                     size_t count) { (void)frames; (void)count; }
     };
 
     void install();

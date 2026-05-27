@@ -146,6 +146,12 @@ void UVC::onDeviceConnected(const uvc_host_driver_event_data_t *event) {
     frames_       = list;
     frames_count_ = list_size;
     xSemaphoreGive(frames_mutex_);
+
+    // Notify the application so it can populate UI / pick a working
+    // (w, h, fps) combo based on what the device actually advertises.
+    if (callback_ && list && list_size > 0) {
+        callback_->onDeviceFormats(list, list_size);
+    }
 }
 
 bool UVC::snapFps(int width, int height, enum uvc_host_stream_format format,
