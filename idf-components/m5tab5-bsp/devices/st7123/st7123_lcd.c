@@ -76,7 +76,7 @@ esp_err_t st7123_lcd_init(const st7123_lcd_config_t *config, st7123_lcd_t *lcd) 
         .bus_id = 0,
         .num_data_lanes = 2,
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
-        .lane_bit_rate_mbps = 870,
+        .lane_bit_rate_mbps = 965,
     };
     ret = esp_lcd_new_dsi_bus(&bus_config, &state->mipi_dsi_bus);
     if (ret != ESP_OK) goto err_ldo;
@@ -100,7 +100,7 @@ esp_err_t st7123_lcd_init(const st7123_lcd_config_t *config, st7123_lcd_t *lcd) 
         .video_timing = {
             .h_size = config->size.width,
             .v_size = config->size.height,
-            .hsync_pulse_width = 40,
+            .hsync_pulse_width = 2,
             .hsync_back_porch = 140,
             .hsync_front_porch = 40,
             .vsync_pulse_width = 2,
