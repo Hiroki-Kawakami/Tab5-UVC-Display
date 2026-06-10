@@ -5,7 +5,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "jpeg_ppa_pipeline.hpp"
+#include "jpeg_ppa_pipeline.h"
 #include "bsp_tab5.h"
 #include "uvc_display.hpp"
 #include "nvs.hpp"
@@ -19,11 +19,11 @@ namespace {
 constexpr int DISP_W = 720;
 constexpr int DISP_H = 1280;
 
-// strip_h must be a multiple of the JPEG MCU height. The UVC camera here
-// outputs YUV422 (mcu_y = 8); we use STRIP_H=16 = 2 MCU rows so each strip
-// covers more pixels and we issue fewer PPA submissions per frame (45
-// strips instead of 90). 16 lines × 1280 px × 3 B (RGB888) = 60 KiB per
-// slot; RING_COUNT=5 fits in 300 KiB of MALLOC_CAP_INTERNAL.
+// Strip height hint; the pipeline rounds it to the frame's MCU height (8 for
+// the YUV422 this camera emits). 16 = 2 MCU rows, so each strip covers more
+// pixels and we issue fewer PPA submissions per frame (45 strips instead of
+// 90). 16 lines × 1280 px × 3 B (RGB888) = 60 KiB per slot; RING_COUNT=5
+// fits in 300 KiB of MALLOC_CAP_INTERNAL.
 // Backpressure: a descriptor is only re-linked into the chain after PPA
 // finishes its previous strip in the same ring slot. We need
 // ring_count > PPA-strip / JPEG-strip ratio.
@@ -32,7 +32,13 @@ constexpr int RING_COUNT = 5;
 
 usb_host::UVC uvc;
 usb_host::UAC uac;
-jpeg_ppa::Pipeline *pipeline;
+jpeg_ppa_pipeline_handle_t pipeline;
+// Per-frame transforms, fixed by the stream geometry at onEnter(). The GUI
+// variant restricts rendering to the output band below the GUI panel (only
+// possible at scale 1; otherwise it's a copy of the full transform and the
+// GUI is simply composed over the video).
+jpeg_ppa_transform_t pipeline_transform;
+jpeg_ppa_transform_t pipeline_transform_gui;
 QueueHandle_t frame_queue;
 
 // Mirrors PreviewScreen::connected_ so the renderer task (in this namespace)
@@ -133,12 +139,15 @@ void renderer_task(void *) {
         bool flush_next = false;
 
         if (got_frame) {
-            jpeg_ppa::RenderOpts opts;
-            if (gui_v) {
-                opts.out_y_start = GUI_PANEL_H;
-                opts.out_y_end   = DISP_H;
-            }
-            esp_err_t err = pipeline->process(frame->data, frame->data_len, out_fb, opts);
+            jpeg_ppa_output_t out = {};
+            out.buffer = out_fb;
+            out.pic_w = DISP_W;
+            out.pic_h = DISP_H;
+            out.color_mode = to_ppa_color_mode(pf_port::display_pixel_format());
+            const jpeg_ppa_transform_t *t = gui_v ? &pipeline_transform_gui
+                                                  : &pipeline_transform;
+            esp_err_t err = jpeg_ppa_pipeline_process(pipeline, frame->data, frame->data_len,
+                                                      &out, t, nullptr);
             uvc.returnFrame(frame);
             if (err == ESP_OK) {
                 if (gui_v) gui_compose(out_fb);
@@ -401,28 +410,38 @@ void PreviewScreen::onEnter() {
     uac.install();
     uac.setCallback(this);
 
+    jpeg_ppa_pipeline_cfg_t pcfg = {};
+    pcfg.max_pic_w = stream_w_;
+    pcfg.max_pic_h = stream_h_;
+    pcfg.strip_h_hint = STRIP_H;
+    pcfg.ring_count = RING_COUNT;
+    pcfg.strip_color_mode = PPA_SRM_COLOR_MODE_RGB888;
+    pcfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
+    pcfg.conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
+    // MJPEG is full-range YUV; the limited-range default would wash blacks out.
+    pcfg.yuv_full_range = true;
+    pcfg.worker_core = 0;  // share core 0 with the UVC callbacks + renderer
+    ESP_ERROR_CHECK(jpeg_ppa_pipeline_new(&pcfg, &pipeline));
+
     // Stretch-to-fill. After ANGLE_90, the input's pic_h column maps to the
     // output's width (driven by scale_y) and the pic_w row maps to the
     // output's height (driven by scale_x). Scaling each axis independently
     // fills the full DISP_W × DISP_H without preserving aspect ratio, so
     // sub-1280×720 sources stretch to the panel instead of letterboxing.
     // 1280×720 → both scales == 1.0, behaviour is unchanged.
-    jpeg_ppa::Config pcfg{};
-    pcfg.pic_w = stream_w_;
-    pcfg.pic_h = stream_h_;
-    pcfg.strip_h = STRIP_H;
-    pcfg.ring_count = RING_COUNT;
-    pcfg.input_color_mode = PPA_SRM_COLOR_MODE_RGB888;
-    pcfg.out_pic_w = DISP_W;
-    pcfg.out_pic_h = DISP_H;
-    pcfg.out_color_mode = to_ppa_color_mode(pf_port::display_pixel_format());
-    pcfg.rotation = PPA_SRM_ROTATION_ANGLE_90;
-    pcfg.scale_x = (float)DISP_H / (float)stream_w_;
-    pcfg.scale_y = (float)DISP_W / (float)stream_h_;
-    pcfg.yuv_rgb_conv_std = JPEG_YUV_RGB_CONV_STD_BT601;
-
-    pipeline = new jpeg_ppa::Pipeline();
-    ESP_ERROR_CHECK(pipeline->init(pcfg));
+    pipeline_transform = {};
+    pipeline_transform.rotation = PPA_SRM_ROTATION_ANGLE_90;
+    pipeline_transform.scale_x = (float)DISP_H / (float)stream_w_;
+    pipeline_transform.scale_y = (float)DISP_W / (float)stream_h_;
+    pipeline_transform_gui = pipeline_transform;
+    if (stream_w_ == DISP_H) {
+        // GUI visible: skip the camera columns that would land under the GUI
+        // panel (rot-90 maps input x to output y) and render only the band
+        // [GUI_PANEL_H, DISP_H). Only expressible at scale 1.
+        pipeline_transform_gui.in_crop = { 0, 0, (uint32_t)(DISP_H - GUI_PANEL_H),
+                                           (uint32_t)stream_h_ };
+        pipeline_transform_gui.out_offset_y = GUI_PANEL_H;
+    }
 
     frame_queue = xQueueCreate(1, sizeof(uvc_host_frame_t*));
     uvc_reopen_sem = xSemaphoreCreateBinary();
@@ -563,11 +582,6 @@ void PreviewScreen::apply_camera_formats(const uvc_host_frame_info_t *frames, si
         // the edge of the MALLOC_CAP_INTERNAL pool at 1280 wide, so
         // bigger pictures won't fit.
         if ((uint32_t)fi.h_res * (uint32_t)fi.v_res > 1280u * 720u) continue;
-        // pic_h must divide evenly into STRIP_H or jpeg_strip_decoder_new
-        // rejects the config (e.g. 800x600 → "pic_h 600 not divisible by
-        // strip_h 16"). Drop those entries so the dropdown only offers
-        // resolutions the pipeline can actually accept.
-        if (fi.v_res % STRIP_H != 0) continue;
 
         // Find-or-insert by (w, h).
         int idx = -1;

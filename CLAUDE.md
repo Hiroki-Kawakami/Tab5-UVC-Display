@@ -42,7 +42,6 @@ ESP-IDF v5.4.3 lives at `/nix/store/1jf3iqwyp77i8y54cgn6qxbrwl3wx5mz-esp-idf-v5.
 ## Layout
 
 - `app/` — `PreviewScreen` (UVC frame → pipeline → display), `uvc_display.cpp`.
-  Shared by ESP-IDF build and SDL `simulator/`.
 - `components/{lvgl++,screen_manager}/` — shared UI helpers.
 - `idf-components/main/` — IDF entry (`main.cpp`), `platform_port_*` adapters
   for JPEG/PPA, USB host wrappers. **No explicit `REQUIRES`** — the absence
@@ -53,23 +52,52 @@ ESP-IDF v5.4.3 lives at `/nix/store/1jf3iqwyp77i8y54cgn6qxbrwl3wx5mz-esp-idf-v5.
   audio. `inc/audio_eq.h` + `src/audio_eq.c` is the cascaded-biquad EQ /
   software fader / mono-mix DSP block that sits inside
   `bsp_tab5_audio_write` (see the audio section below).
-- `idf-components/jpeg_ppa_pipeline/` — the strip-pipelined JPEG + PPA path.
+- `idf-components/jpeg_decode_enhanced/` — reusable strip-pipelined JPEG
+  decode (+ optional PPA) component, all C. Full documentation (usage,
+  config reference, tuning, 2D-DMA internals) lives in its `README.md`.
+  Two layers:
+  - `jpeg_decode_enhanced.h` — Layer 1: strip decoder
+    (`jpeg_enh_strip_decoder_*`) + whole-frame convenience decode
+    (`jpeg_enh_decoder_process`). PPA-free; full-range YUV→RGB capable.
+  - `jpeg_ppa_pipeline.h` — Layer 2: `jpeg_ppa_pipeline_*`, drives Layer 1
+    strips through PPA SRM with a per-frame transform (rotation / scale /
+    mirror / crop / output offset).
   Bypasses IDF's `jpeg_decoder_process()` by reaching into ESP-IDF private
   headers; do **not** override `esp_driver_jpeg` (the user explicitly rejected
   that approach). The component's CMakeLists adds private include paths via
-  `target_include_directories(... PRIVATE $ENV{IDF_PATH}/components/esp_driver_jpeg{,/private})`.
+  `target_include_directories(... PRIVATE $ENV{IDF_PATH}/components/esp_driver_jpeg{,/private})`,
+  and `jpeg_decode_enhanced.c` has an `ESP_IDF_VERSION` guard (validated on
+  v5.4.x only) because it touches `jpeg_private.h` struct layout.
 
 `esp32p4/CMakeLists.txt` wires both `components/` and `idf-components/` via
 `EXTRA_COMPONENT_DIRS`. The `main` component's CMake also globs `app/` and
 `components/*/` into the main source list.
 
-## jpeg_ppa_pipeline — design summary
+## jpeg_decode_enhanced — design summary
 
 Why it exists: JPEG-codec alone can do 60fps@1280×720; with the stock
 `jpeg_decoder_process` → PSRAM → PPA SRM → PSRAM-FB chain, PSRAM bandwidth
 caps throughput at ~20fps. Decoding into a ring of **internal SRAM** strip
 buffers and feeding each strip through PPA SRM in parallel removes the
 PSRAM-read leg and brings the system back to camera-saturating 30fps.
+(`strip_alloc_caps = MALLOC_CAP_SPIRAM` keeps the ring in PSRAM instead —
+slower, but useful when the goal is just a small intermediate buffer; the
+component handles the cache purge at alloc time and CPU consumers must call
+`jpeg_enh_strip_decoder_sync_strip_for_cpu` before reading a strip.)
+
+Frame geometry is re-derived from the JPEG header every frame: any size up
+to `max_pic_w/max_pic_h` decodes without reconfiguration, `strip_h_hint` is
+rounded to the frame's MCU height, the final strip may be shorter, and
+non-MCU-aligned image heights are decoded padded then cropped by the PPA
+stage (strip events carry `rows` = valid vs `padded_rows`). The only hard
+constraint left is hardware: strip boundaries sit on MCU-row boundaries
+because the 2D-DMA RX reorder works in JPEG-sampling-sized macro blocks and
+one MCU row cannot span two descriptors.
+
+`yuv_full_range` (Layer 1 cfg / pipeline cfg) switches the decode CSC from
+IDF's stock limited-range matrix to the JFIF full-range one (BT601 and BT709
+tables both provided). Default **false** = IDF-compatible limited range;
+the Tab5 app sets **true** — forgetting it washes out blacks.
 
 Pipeline shape:
 
@@ -114,19 +142,33 @@ Key implementation decisions that were learned the hard way:
 6. `on_desc_done` does **not** populate `event_data->rx_eof_desc_addr` (only
    `on_recv_eof` does). Track strip index with a counter, not by inspecting
    the descriptor address from the event.
+7. **Do not register `on_desc_empty`.** Registering it newly enables the
+   DESC_EMPTY interrupt, which the dma2d ISR handles by freeing the pooled
+   channels (plus an FSM-idle assert) — and whether the raw bit also raises
+   at a *normal* frame end is unverified, so enabling it risks breaking
+   every frame. A mid-frame ring underrun is instead diagnosed at decode
+   timeout from the signature `isr_next_strip == chain_tail + 1` (DMA
+   consumed every linked descriptor and stalled at the unspliced one).
+8. `release_strip()` splices/appends under a spinlock gated by
+   `frame_active`; the gate closes before `dma2d_force_end` on error paths
+   so a late release can't poke a freed (possibly reassigned) DMA channel.
+   On clean frames the gate is provably irrelevant: EOF implies every
+   mid-frame splice already happened, and post-EOF releases are no-ops
+   (`strip_idx + ring_count >= strip_count`).
 
 ## Tuning (preview_screen.cpp)
 
 ```cpp
-constexpr int STRIP_H = 16;       // must be a multiple of JPEG mcu_y
+constexpr int STRIP_H = 16;       // strip_h_hint; rounded to mcu_y per frame
 constexpr int RING_COUNT = 5;     // SRAM ring depth
 ```
 
 Constraints to satisfy:
 
-- `STRIP_H % mcu_y == 0`. For YUV420 JPEG: `mcu_y = 16`; for **YUV422 JPEG**
-  (this camera): `mcu_y = 8`. STRIP_H=16 covers 2 MCU rows on YUV422.
-- `pic_h % STRIP_H == 0`.
+- `STRIP_H` is a hint: the pipeline rounds it down to the frame's `mcu_y`
+  (8 for the YUV422 this camera emits, 16 for YUV420). Keeping it a
+  multiple of 16 also guarantees the per-strip scale placement check passes
+  for any scale factor (16 × any 1/16-quantized scale is an integer).
 - `RING_COUNT * STRIP_H * pic_w * bytes_per_pixel < ~300 KiB` of available
   `MALLOC_CAP_INTERNAL`. After IDF + USB + LVGL + FreeRTOS overhead, the
   largest free SRAM region is the 384 KiB pool at `0x4FF40000` (boot log
@@ -141,18 +183,28 @@ Constraints to satisfy:
 
 ## Output-FB strip placement
 
-`Pipeline::Impl::set_up_ppa_op` maps strip `i` to its location in the
-rotated output FB. PPA's `ANGLE_90` is **CW** (input top row → output right
-column, then strip-0 lands at output `x=0`):
+`s_strip_out_rect` (jpeg_ppa_pipeline.c) maps each strip's crop-relative,
+scaled row band `[A, B)` into the output through rotate → mirror → offset.
+Pre-mirror placement (empirically matches PPA hardware; strip 0 = image
+top):
 
-| rotation | block_offset_x       | block_offset_y       |
-|---|---|---|
-| 0   | 0                          | i * scaled_strip           |
-| 90  | i * scaled_strip           | 0                          |
-| 180 | 0                          | (N-1-i) * scaled_strip     |
-| 270 | (N-1-i) * scaled_strip     | 0                          |
+| rotation | rect (x, y, w, h) |
+|---|---|
+| 0   | (0, A, scaled_w, B−A)            |
+| 90  | (A, 0, B−A, scaled_w)            |
+| 180 | (0, scaled_h−B, scaled_w, B−A)   |
+| 270 | (scaled_h−B, 0, B−A, scaled_w)   |
 
-If output looks mirrored, swap the 90/270 formulas.
+If output looks mirrored, swap the 90/270 formulas. `mirror_x/_y` flip the
+rect across the scaled-rotated extent (PPA mirrors the pixels inside each
+block; the placement flip completes the global mirror) — **assumed
+output-space mirror semantics, not yet verified on hardware** since the Tab5
+app doesn't use mirror.
+
+Because every strip is an independent PPA block, each interior strip
+boundary must scale to a whole output row; `s_on_frame_start` validates
+`(boundary_rel × scale_y_sixteenths) % 16 == 0` per frame and rejects the
+transform otherwise.
 
 ## Camera (UVC) notes
 
@@ -410,22 +462,29 @@ right next thing to tune separately.
 
 ## Things to check before changing the pipeline
 
-- `Pipeline::Config::yuv_rgb_conv_std` chooses BT601 vs BT709 for the
-  YUV→RGB CSC done inside the JPEG decode 2D-DMA path. Default BT601.
-- `Pipeline::Config::input_color_mode` is the **intermediate strip
-  format**, not the JPEG input format. It controls both the JPEG codec
-  output format (`s_jpeg_out_for_ppa`) and the PPA SRM input color mode.
-  RGB565 saves SRAM at the cost of color depth; RGB888 preserves precision.
-- `s_bit_depth(cm) / 8` correctly sizes the strip buffer for YUV420 (12bpp);
-  do not switch back to `bit_depth / 8` truncated arithmetic for buffer
-  sizing.
+- `conv_std` (pipeline cfg) chooses BT601 vs BT709 for the YUV→RGB CSC done
+  inside the JPEG decode 2D-DMA path; `yuv_full_range` switches the matrix
+  to JFIF full range (the Tab5 app needs `true`).
+- `strip_color_mode` is the **intermediate strip format**, not the JPEG
+  input format. It controls both the JPEG codec output format
+  (`s_jpeg_out_for_strip_cm`) and the PPA SRM input color mode. RGB565
+  saves SRAM at the cost of color depth; RGB888 preserves precision.
+- Strip buffers are sized with bit-depth math (`bits / 8` on the *total*),
+  so YUV420 (12bpp → 1.5 B/px) sizes correctly; do not switch back to
+  truncated `bytes_per_pixel` arithmetic.
+- Transform parameters (rotation/scale/mirror/crop/out offset) are
+  per-frame — only sizes, formats and ring memory are fixed at
+  `jpeg_ppa_pipeline_new` time.
 
 ## Risk / unfinished
 
-- Backpressure margin is implicit: there's no runtime detection if PPA
-  falls behind by more than `RING_COUNT-1` strips. Symptom would be the
-  DMA chain reaching `next=NULL` and the transaction terminating
-  prematurely. So far observed only when STRIP_H/RING_COUNT was set too
-  aggressively.
-- The simulator (`simulator/`) shares `app/` sources but has no JPEG/PPA
-  path; pipeline changes there are no-ops, no need to keep them in sync.
+- Ring underrun (PPA falling more than `RING_COUNT-1` strips behind) ends
+  the DMA transaction and surfaces as `ESP_ERR_TIMEOUT` ~200 ms later with
+  a "strip ring underrun" log (diagnosed from chain bookkeeping at timeout;
+  the DESC_EMPTY interrupt is deliberately left disabled — see design
+  summary #7). Detection is post-hoc, not preventive.
+- `mirror_x/_y` placement math assumes PPA mirrors in output space; not yet
+  verified on hardware (unused by the Tab5 app).
+- The whole-frame `jpeg_enh_decoder_process` path and PSRAM strip rings
+  (`strip_alloc_caps = MALLOC_CAP_SPIRAM`) are implemented per the design
+  but have no in-tree user yet, so they're untested on hardware.
